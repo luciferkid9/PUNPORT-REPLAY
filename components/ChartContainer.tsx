@@ -562,7 +562,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
             try {
                 const line = candleSeriesRef.current!.createPriceLine({ 
                     price: t.entryPrice, color: '#787b86', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, 
-                    title: `ENTRY #${t.id.substr(0,4)}` 
+                    title: `ENTRY` // Removed ID from here to move to left
                 });
                 entryLinesRef.current.set(t.id, line);
             } catch(e) {}
@@ -869,6 +869,10 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
           if (t.status === OrderStatus.CLOSED) return;
           const isDraggingThis = dragTrade && dragTrade.id === t.id;
 
+          const labelWidth = 100; // Adjusted width
+          const xOffset = width - labelWidth - 5;
+
+          // For Pending Orders (Entry Line SVG)
           if (t.status === OrderStatus.PENDING) {
               const price = (isDraggingThis && dragTrade.type === 'ENTRY') ? dragTrade.currentPrice : t.entryPrice;
               const y = safePriceCoord(price);
@@ -888,9 +892,14 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                                 }}
                           />
                           <line x1={0} y1={y} x2={width} y2={y} stroke={color} strokeDasharray="4 2" strokeWidth={1} style={{pointerEvents: 'none'}} />
-                          <g transform={`translate(${width - 85}, ${y - 10})`} style={{pointerEvents: 'none'}}>
-                               <rect width="75" height="20" rx="2" fill={color} />
-                               <text x="37.5" y="14" textAnchor="middle" fill="black" fontSize="10" fontWeight="bold">{label} #{t.id.substr(0,4)}</text>
+                          
+                          {/* Order ID on the Left */}
+                          <text x={10} y={y - 4} fill={color} fontSize="10" fontWeight="bold" style={{pointerEvents: 'none'}}>#{t.id.substr(0,4)}</text>
+
+                          {/* Label on the Right (Type + Price) */}
+                          <g transform={`translate(${xOffset}, ${y - 10})`} style={{pointerEvents: 'none'}}>
+                               <rect width={labelWidth} height={20} rx={2} fill={color} />
+                               <text x={labelWidth/2} y={14} textAnchor="middle" fill="black" fontSize="10" fontWeight="bold">{label} {price.toFixed(pricePrecision)}</text>
                           </g>
                       </g>
                   );
@@ -900,6 +909,11 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
           if (t.status === OrderStatus.OPEN) {
                const entryY = safePriceCoord(t.entryPrice);
                if (entryY > 0 && entryY < chartContainerRef.current!.clientHeight) {
+                   // Order ID on the Left for Active Entry
+                   newPaths.push(
+                       <text key={`entry-lbl-${t.id}`} x={10} y={entryY - 4} fill="#a1a1aa" fontSize="10" fontWeight="bold" style={{pointerEvents: 'none'}}>#{t.id.substr(0,4)}</text>
+                   );
+
                    if (t.stopLoss === 0 && (!isDraggingThis || dragTrade.type !== 'SL')) {
                         newPaths.push(
                             <g key={`sl-add-${t.id}`} className="cursor-pointer select-none" style={{pointerEvents: 'auto'}} transform={`translate(${width - 115}, ${entryY - 10})`} 
@@ -935,14 +949,46 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
               const price = (isDraggingThis && dragTrade.type === 'SL') ? dragTrade.currentPrice : t.stopLoss;
               const y = safePriceCoord(price);
               if (y > 0 && y < chartContainerRef.current!.clientHeight) {
-                  newPaths.push(<g key={`sl-${t.id}`} className="cursor-ns-resize group" style={{pointerEvents: 'auto'}}><line x1={0} y1={y} x2={width} y2={y} stroke="transparent" strokeWidth={20} style={{pointerEvents: 'stroke', cursor: 'ns-resize'}} onMouseDown={(e) => { e.stopPropagation(); setDragTrade({ id: t.id, type: 'SL', startPrice: t.stopLoss, currentPrice: t.stopLoss }); }} /><line x1={0} y1={y} x2={width} y2={y} stroke="#F23645" strokeDasharray="4 4" strokeWidth={1} style={{pointerEvents: 'none'}} /><g transform={`translate(${width - 65}, ${y - 10})`} style={{pointerEvents: 'none'}}><rect width="55" height="20" rx="2" fill="#F23645" /><text x="27.5" y="14" textAnchor="middle" fill="white" fontSize="12" fontWeight="bold">SL</text></g></g>);
+                  newPaths.push(
+                    <g key={`sl-${t.id}`} className="cursor-ns-resize group" style={{pointerEvents: 'auto'}}>
+                        <line x1={0} y1={y} x2={width} y2={y} stroke="transparent" strokeWidth={20} style={{pointerEvents: 'stroke', cursor: 'ns-resize'}} onMouseDown={(e) => { e.stopPropagation(); setDragTrade({ id: t.id, type: 'SL', startPrice: t.stopLoss, currentPrice: t.stopLoss }); }} />
+                        <line x1={0} y1={y} x2={width} y2={y} stroke="#F23645" strokeDasharray="4 4" strokeWidth={1} style={{pointerEvents: 'none'}} />
+                        
+                        {/* Order ID on the Left */}
+                        <text x={10} y={y - 4} fill="#F23645" fontSize="10" fontWeight="bold" style={{pointerEvents: 'none'}}>SL #{t.id.substr(0,4)}</text>
+
+                        {/* Label on the Right (Type + Price) */}
+                        <g transform={`translate(${xOffset}, ${y - 10})`} style={{pointerEvents: 'none'}}>
+                            <rect width={labelWidth} height={20} rx={4} fill="#F23645" />
+                            <text x={labelWidth/2} y={14} textAnchor="middle" fill="white" fontSize="11" fontWeight="bold">
+                                SL {price.toFixed(pricePrecision)}
+                            </text>
+                        </g>
+                    </g>
+                  );
               }
           }
           if (t.takeProfit > 0 || (isDraggingThis && dragTrade.type === 'TP')) {
               const price = (isDraggingThis && dragTrade.type === 'TP') ? dragTrade.currentPrice : t.takeProfit;
               const y = safePriceCoord(price);
               if (y > 0 && y < chartContainerRef.current!.clientHeight) {
-                  newPaths.push(<g key={`tp-${t.id}`} className="cursor-ns-resize group" style={{pointerEvents: 'auto'}}><line x1={0} y1={y} x2={width} y2={y} stroke="transparent" strokeWidth={20} style={{pointerEvents: 'stroke', cursor: 'ns-resize'}} onMouseDown={(e) => { e.stopPropagation(); setDragTrade({ id: t.id, type: 'TP', startPrice: t.takeProfit, currentPrice: t.takeProfit }); }} /><line x1={0} y1={y} x2={width} y2={y} stroke="#089981" strokeDasharray="4 4" strokeWidth={1} style={{pointerEvents: 'none'}} /><g transform={`translate(${width - 65}, ${y - 10})`} style={{pointerEvents: 'none'}}><rect width="55" height="20" rx="2" fill="#089981" /><text x="27.5" y="14" textAnchor="middle" fill="white" fontSize="12" fontWeight="bold">TP</text></g></g>);
+                  newPaths.push(
+                    <g key={`tp-${t.id}`} className="cursor-ns-resize group" style={{pointerEvents: 'auto'}}>
+                        <line x1={0} y1={y} x2={width} y2={y} stroke="transparent" strokeWidth={20} style={{pointerEvents: 'stroke', cursor: 'ns-resize'}} onMouseDown={(e) => { e.stopPropagation(); setDragTrade({ id: t.id, type: 'TP', startPrice: t.takeProfit, currentPrice: t.takeProfit }); }} />
+                        <line x1={0} y1={y} x2={width} y2={y} stroke="#089981" strokeDasharray="4 4" strokeWidth={1} style={{pointerEvents: 'none'}} />
+                        
+                        {/* Order ID on the Left */}
+                        <text x={10} y={y - 4} fill="#089981" fontSize="10" fontWeight="bold" style={{pointerEvents: 'none'}}>TP #{t.id.substr(0,4)}</text>
+
+                        {/* Label on the Right (Type + Price) */}
+                        <g transform={`translate(${xOffset}, ${y - 10})`} style={{pointerEvents: 'none'}}>
+                            <rect width={labelWidth} height={20} rx={4} fill="#089981" />
+                            <text x={labelWidth/2} y={14} textAnchor="middle" fill="white" fontSize="11" fontWeight="bold">
+                                TP {price.toFixed(pricePrecision)}
+                            </text>
+                        </g>
+                    </g>
+                  );
               }
           }
       });

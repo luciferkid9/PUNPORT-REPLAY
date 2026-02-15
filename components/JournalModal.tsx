@@ -31,6 +31,8 @@ export const JournalModal: React.FC<Props> = ({ trade, activeTimeframe, onSave, 
     const chartRef = useRef<IChartApi | null>(null);
     const [isLoadingChart, setIsLoadingChart] = useState(true);
 
+    const formatCurrency = (val: number) => val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
     useEffect(() => {
         if (!chartContainerRef.current) return;
         
@@ -127,7 +129,7 @@ export const JournalModal: React.FC<Props> = ({ trade, activeTimeframe, onSave, 
                         <div className="flex flex-col">
                             <span className="text-xl font-bold text-white leading-none mb-1">{trade.symbol} <span className="text-zinc-500 text-sm font-normal">#{trade.id.substr(0,4)}</span></span>
                             <span className={`text-lg font-mono font-bold leading-none ${isProfit ? 'text-green-400' : 'text-red-400'}`}>
-                                {isProfit ? '+' : ''}${(trade.pnl || 0).toFixed(2)}
+                                {isProfit ? '+' : ''}${formatCurrency(trade.pnl || 0)}
                             </span>
                         </div>
                     </div>

@@ -90,6 +90,8 @@ export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, accoun
       }, 0);
   };
 
+  const formatCurrency = (val: number) => val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
   const handlePriceStringChange = (setter: (val: string) => void, val: string) => {
       // Allow empty string or valid decimal number format
       if (val === '' || /^\d*\.?\d*$/.test(val)) setter(val);
@@ -128,7 +130,7 @@ export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, accoun
       const freeMargin = account.equity - usedMargin;
 
       if (requiredMargin > freeMargin) {
-          setErrorModal({ show: true, title: 'Insufficient Margin', message: `Margin Required: $${requiredMargin.toFixed(2)}\nFree Margin: $${freeMargin.toFixed(2)}\n\nPlease reduce lot size.` });
+          setErrorModal({ show: true, title: 'Insufficient Margin', message: `Margin Required: $${formatCurrency(requiredMargin)}\nFree Margin: $${formatCurrency(freeMargin)}\n\nPlease reduce lot size.` });
           return;
       }
 
@@ -258,7 +260,7 @@ export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, accoun
                             />
                         </div>
                         <div className="text-[9px] text-right pr-1 font-mono text-zinc-500 h-3">
-                            {riskAmount > 0 ? `-$${riskAmount.toFixed(2)} (${riskPips.toFixed(1)} pips)` : ''}
+                            {riskAmount > 0 ? `-$${formatCurrency(riskAmount)} (${riskPips.toFixed(1)} pips)` : ''}
                         </div>
                     </div>
 
@@ -275,7 +277,7 @@ export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, accoun
                             />
                         </div>
                         <div className="text-[9px] text-right pr-1 font-mono text-zinc-500 h-3">
-                            {rewardAmount > 0 ? `+$${rewardAmount.toFixed(2)} (${rewardPips.toFixed(1)} pips)` : ''}
+                            {rewardAmount > 0 ? `+$${formatCurrency(rewardAmount)} (${rewardPips.toFixed(1)} pips)` : ''}
                         </div>
                     </div>
                 </div>
@@ -372,6 +374,7 @@ export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, accoun
                             <span className={`text-[10px] font-black uppercase tracking-wide ${trade.side === OrderSide.LONG ? 'text-green-400' : 'text-red-400'}`}>
                                 {isPending ? `${trade.type} ${trade.side}` : trade.side}
                             </span>
+                            <span className="text-[10px] font-mono text-zinc-500 opacity-70">#{trade.id.substr(0,4)}</span>
                             <span className="text-xs font-bold text-white">{trade.quantity}</span>
                             <span className="text-[10px] font-bold text-zinc-500">{trade.symbol}</span>
                         </div>
@@ -389,33 +392,37 @@ export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, accoun
                         <span>@{displayEntry.toFixed(tradeDigits)}</span>
                         {!isPending && (
                             <span className={`font-bold ${isPositive ? 'text-green-400' : 'text-red-400'}`}>
-                                {isPositive ? '+' : ''}{pnlUSD.toFixed(2)}
+                                {isPositive ? '+' : ''}{formatCurrency(pnlUSD)}
                             </span>
                         )}
                         {isPending && <span className="text-amber-500 text-[9px] font-sans font-bold px-1.5 py-0.5 rounded bg-amber-500/10">PENDING</span>}
                     </div>
 
-                    {/* NEW: TP/SL Display with Cash */}
-                    <div className="mt-2 pt-2 border-t border-white/5 flex justify-between items-center text-[10px] font-mono">
-                        <div className="flex items-center space-x-1.5">
-                            <span className="text-zinc-600 font-bold">TP</span>
-                            <span className={displayTP > 0 ? "text-green-400" : "text-zinc-600"}>
-                                {displayTP > 0 ? displayTP.toFixed(tradeDigits) : '---'}
-                            </span>
+                    {/* NEW: TP/SL Display with Cash - Stacked Layout */}
+                    <div className="mt-2 pt-2 border-t border-white/5 flex flex-col space-y-1.5 text-[10px] font-mono">
+                        <div className="flex justify-between items-center">
+                            <div className="flex items-center space-x-2">
+                                <span className="text-zinc-600 font-bold w-4">TP</span>
+                                <span className={displayTP > 0 ? "text-green-400" : "text-zinc-600"}>
+                                    {displayTP > 0 ? displayTP.toFixed(tradeDigits) : '---'}
+                                </span>
+                            </div>
                             {tpCash !== null && (
                                 <span className={`font-bold opacity-80 ${tpCash >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                                    ({tpCash >= 0 ? '+' : '-'}${Math.abs(Math.round(tpCash))})
+                                    {tpCash >= 0 ? '+' : '-'}${formatCurrency(Math.abs(tpCash))}
                                 </span>
                             )}
                         </div>
-                        <div className="flex items-center space-x-1.5">
-                            <span className="text-zinc-600 font-bold">SL</span>
-                            <span className={displaySL > 0 ? "text-red-400" : "text-zinc-600"}>
-                                {displaySL > 0 ? displaySL.toFixed(tradeDigits) : '---'}
-                            </span>
+                        <div className="flex justify-between items-center">
+                            <div className="flex items-center space-x-2">
+                                <span className="text-zinc-600 font-bold w-4">SL</span>
+                                <span className={displaySL > 0 ? "text-red-400" : "text-zinc-600"}>
+                                    {displaySL > 0 ? displaySL.toFixed(tradeDigits) : '---'}
+                                </span>
+                            </div>
                             {slCash !== null && (
                                 <span className={`font-bold opacity-80 ${slCash >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                                    ({slCash >= 0 ? '+' : '-'}${Math.abs(Math.round(slCash))})
+                                    {slCash >= 0 ? '+' : '-'}${formatCurrency(Math.abs(slCash))}
                                 </span>
                             )}
                         </div>

@@ -57,6 +57,9 @@ export const AccountDashboard: React.FC<Props> = ({
       }
   };
 
+  const formatCurrency = (val: number) => val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const formatPrice = (val: number) => val.toLocaleString('en-US', { minimumFractionDigits: pricePrecision, maximumFractionDigits: pricePrecision });
+
   return (
     <div className="p-3 pb-0 z-30 relative w-full max-w-full box-border">
         <div className="glass-bubble rounded-2xl px-4 py-3 flex items-center justify-between shadow-lg ring-1 ring-white/5 overflow-hidden transition-all">
@@ -107,11 +110,11 @@ export const AccountDashboard: React.FC<Props> = ({
             <div className="hidden md:flex space-x-6 shrink-0">
                <div className="flex flex-col">
                 <span className="text-zinc-500 text-[10px] font-bold tracking-widest uppercase mb-0.5">Balance</span>
-                <span className="font-mono text-sm font-bold text-zinc-200">${account.balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                <span className="font-mono text-sm font-bold text-zinc-200">${formatCurrency(account.balance)}</span>
                </div>
                <div className="flex flex-col">
                 <span className="text-zinc-500 text-[10px] font-bold tracking-widest uppercase mb-0.5">Equity</span>
-                <span className={`font-mono text-sm font-bold ${isProfit ? 'text-green-400' : 'text-red-400'}`}>${account.equity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                <span className={`font-mono text-sm font-bold ${isProfit ? 'text-green-400' : 'text-red-400'}`}>${formatCurrency(account.equity)}</span>
                </div>
             </div>
           </div>
@@ -172,7 +175,7 @@ export const AccountDashboard: React.FC<Props> = ({
             
             <div className="text-right min-w-[80px] px-2 shrink-0">
                 <span className="text-zinc-500 text-[9px] block font-bold uppercase">Price</span>
-                <span className={`font-mono text-lg font-bold drop-shadow-sm ${currentPrice > 0 ? 'text-yellow-400' : 'text-zinc-600'}`}>{currentPrice > 0 ? currentPrice.toFixed(pricePrecision) : '---'}</span>
+                <span className={`font-mono text-lg font-bold drop-shadow-sm ${currentPrice > 0 ? 'text-yellow-400' : 'text-zinc-600'}`}>{currentPrice > 0 ? formatPrice(currentPrice) : '---'}</span>
             </div>
           </div>
         </div>
