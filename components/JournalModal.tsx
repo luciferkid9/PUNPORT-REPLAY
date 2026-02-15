@@ -68,6 +68,8 @@ export const JournalModal: React.FC<Props> = ({ trade, activeTimeframe, onSave, 
         const series = chart.addCandlestickSeries({
              upColor: '#089981', downColor: '#F23645', borderVisible: false, wickUpColor: '#089981', wickDownColor: '#F23645',
              priceFormat: { type: 'price', precision: trade.symbol.includes('JPY') ? 3 : 5, minMove: 0.00001 },
+             priceLineVisible: false, // Disable the price line to avoid confusion with SL/TP
+             lastValueVisible: false, // Disable the price label on axis
         });
 
         chartRef.current = chart;

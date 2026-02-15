@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { DrawingObject, FibLevel, LineStyle } from '../types';
+import { DrawingObject, FibLevel, LineStyle, SessionConfig } from '../types';
 
 interface Props {
   drawing: DrawingObject;
@@ -9,15 +9,34 @@ interface Props {
 }
 
 export const DrawingSettingsModal: React.FC<Props> = ({ drawing, onSave, onClose }) => {
-  const [localDrawing, setLocalDrawing] = useState<DrawingObject>(() => ({
-      ...drawing,
-      fibLevels: drawing.fibLevels ? drawing.fibLevels.map(l => ({...l})) : undefined
-  }));
+  const [localDrawing, setLocalDrawing] = useState<DrawingObject>(() => {
+      // Deep copy to prevent mutation
+      const copy = { ...drawing };
+      if (drawing.fibLevels) copy.fibLevels = drawing.fibLevels.map(l => ({...l}));
+      if (drawing.killZoneConfig) {
+          copy.killZoneConfig = {
+              ...drawing.killZoneConfig,
+              asian: { ...drawing.killZoneConfig.asian },
+              london: { ...drawing.killZoneConfig.london },
+              ny: { ...drawing.killZoneConfig.ny }
+          };
+      }
+      return copy;
+  });
   
-  const [activeTab, setActiveTab] = useState<'STYLE' | 'COORDS' | 'FIB'>('STYLE');
+  const [activeTab, setActiveTab] = useState<'STYLE' | 'COORDS' | 'FIB' | 'KZ' | 'TEXT'>('STYLE');
+
+  useEffect(() => {
+      if (drawing.type === 'KILLZONE') setActiveTab('KZ');
+      if (drawing.type === 'TEXT') setActiveTab('TEXT');
+  }, [drawing.type]);
 
   const tabs = drawing.type === 'FIB' 
     ? ['STYLE', 'COORDS', 'FIB'] 
+    : drawing.type === 'KILLZONE'
+    ? ['KZ', 'COORDS']
+    : drawing.type === 'TEXT'
+    ? ['TEXT', 'STYLE', 'COORDS']
     : ['STYLE', 'COORDS'];
 
   const handleLevelChange = (index: number, field: keyof FibLevel, value: any) => {
@@ -46,13 +65,26 @@ export const DrawingSettingsModal: React.FC<Props> = ({ drawing, onSave, onClose
       });
   };
 
+  const handleSessionChange = (session: 'asian' | 'london' | 'ny', field: keyof SessionConfig, value: any) => {
+      setLocalDrawing(prev => {
+          if (!prev.killZoneConfig) return prev;
+          return {
+              ...prev,
+              killZoneConfig: {
+                  ...prev.killZoneConfig,
+                  [session]: { ...prev.killZoneConfig[session], [field]: value }
+              }
+          };
+      });
+  };
+
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="glass-panel border border-white/10 rounded-2xl shadow-2xl w-80 max-h-[70vh] flex flex-col bg-[#09090b]/90 overflow-hidden">
+      <div className={`glass-panel border border-white/10 rounded-2xl shadow-2xl flex flex-col bg-[#09090b]/90 overflow-hidden ${drawing.type === 'KILLZONE' ? 'w-[400px]' : 'w-80'} max-h-[70vh]`}>
         {/* Header */}
         <div className="flex items-center justify-between p-3 border-b border-white/10 bg-white/[0.02] shrink-0">
             <h2 className="text-xs font-bold text-zinc-200 uppercase tracking-wider">
-                {localDrawing.type} Settings
+                {localDrawing.type === 'KILLZONE' ? 'Kill Zone Settings' : `${localDrawing.type} Settings`}
             </h2>
             <button onClick={onClose} className="text-zinc-500 hover:text-white transition-colors">
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
@@ -67,17 +99,157 @@ export const DrawingSettingsModal: React.FC<Props> = ({ drawing, onSave, onClose
                     onClick={() => setActiveTab(tab as any)}
                     className={`flex-1 py-2 text-xs font-bold transition-all ${activeTab === tab ? 'text-blue-400 border-b-2 border-blue-500 bg-white/5' : 'text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.02]'}`}
                 >
-                    {tab === 'FIB' ? 'LEVELS' : tab}
+                    {tab === 'FIB' ? 'LEVELS' : tab === 'KZ' ? 'SETTINGS' : tab === 'TEXT' ? 'CONTENT' : tab}
                 </button>
             ))}
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-3 scrollbar-thin scrollbar-thumb-zinc-700">
+        <div className="flex-1 overflow-y-auto p-4 scrollbar-thin scrollbar-thumb-zinc-700">
+            
+            {/* --- TEXT CONTENT SPECIFIC UI --- */}
+            {activeTab === 'TEXT' && (
+                <div className="space-y-4">
+                    <div>
+                        <label className="text-[10px] text-zinc-500 block mb-1 font-bold">Text Content</label>
+                        <textarea 
+                            value={localDrawing.text || ''}
+                            onChange={(e) => setLocalDrawing({...localDrawing, text: e.target.value})}
+                            className="w-full bg-black/20 border border-white/5 rounded-lg p-2 text-sm text-white outline-none focus:border-blue-500/50 min-h-[80px]"
+                        />
+                    </div>
+                    <div>
+                        <label className="text-[10px] text-zinc-500 block mb-1 font-bold">Font Size</label>
+                        <input 
+                            type="number"
+                            value={localDrawing.fontSize || 14}
+                            onChange={(e) => setLocalDrawing({...localDrawing, fontSize: parseInt(e.target.value)})}
+                            className="w-full bg-black/20 border border-white/5 rounded-lg p-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50"
+                        />
+                    </div>
+                </div>
+            )}
+
+            {/* --- KILL ZONE SPECIFIC UI --- */}
+            {activeTab === 'KZ' && localDrawing.killZoneConfig && (
+                <div className="space-y-4">
+                    {/* Asian Session */}
+                    <div className="flex items-center gap-2">
+                        <input type="checkbox" checked={localDrawing.killZoneConfig.asian.enabled} onChange={(e) => handleSessionChange('asian', 'enabled', e.target.checked)} className="rounded border-zinc-600 bg-zinc-800 accent-blue-500 h-4 w-4" />
+                        <div className="flex-1 grid grid-cols-12 gap-2 items-center">
+                            <input type="text" value={localDrawing.killZoneConfig.asian.label} onChange={(e) => handleSessionChange('asian', 'label', e.target.value)} className="col-span-3 bg-black/30 border border-white/5 rounded px-2 py-1 text-xs text-white" />
+                            <div className="col-span-1"><input type="color" value={localDrawing.killZoneConfig.asian.color} onChange={(e) => handleSessionChange('asian', 'color', e.target.value)} className="w-6 h-6 rounded bg-transparent border-none cursor-pointer" /></div>
+                            <input type="time" value={localDrawing.killZoneConfig.asian.start} onChange={(e) => handleSessionChange('asian', 'start', e.target.value)} className="col-span-3 bg-black/30 border border-white/5 rounded px-1 py-1 text-xs text-white text-center" />
+                            <span className="col-span-1 text-center text-zinc-500">-</span>
+                            <input type="time" value={localDrawing.killZoneConfig.asian.end} onChange={(e) => handleSessionChange('asian', 'end', e.target.value)} className="col-span-3 bg-black/30 border border-white/5 rounded px-1 py-1 text-xs text-white text-center" />
+                        </div>
+                    </div>
+
+                    {/* London Session */}
+                    <div className="flex items-center gap-2">
+                        <input type="checkbox" checked={localDrawing.killZoneConfig.london.enabled} onChange={(e) => handleSessionChange('london', 'enabled', e.target.checked)} className="rounded border-zinc-600 bg-zinc-800 accent-blue-500 h-4 w-4" />
+                        <div className="flex-1 grid grid-cols-12 gap-2 items-center">
+                            <input type="text" value={localDrawing.killZoneConfig.london.label} onChange={(e) => handleSessionChange('london', 'label', e.target.value)} className="col-span-3 bg-black/30 border border-white/5 rounded px-2 py-1 text-xs text-white" />
+                            <div className="col-span-1"><input type="color" value={localDrawing.killZoneConfig.london.color} onChange={(e) => handleSessionChange('london', 'color', e.target.value)} className="w-6 h-6 rounded bg-transparent border-none cursor-pointer" /></div>
+                            <input type="time" value={localDrawing.killZoneConfig.london.start} onChange={(e) => handleSessionChange('london', 'start', e.target.value)} className="col-span-3 bg-black/30 border border-white/5 rounded px-1 py-1 text-xs text-white text-center" />
+                            <span className="col-span-1 text-center text-zinc-500">-</span>
+                            <input type="time" value={localDrawing.killZoneConfig.london.end} onChange={(e) => handleSessionChange('london', 'end', e.target.value)} className="col-span-3 bg-black/30 border border-white/5 rounded px-1 py-1 text-xs text-white text-center" />
+                        </div>
+                    </div>
+
+                    {/* NY Session */}
+                    <div className="flex items-center gap-2">
+                        <input type="checkbox" checked={localDrawing.killZoneConfig.ny.enabled} onChange={(e) => handleSessionChange('ny', 'enabled', e.target.checked)} className="rounded border-zinc-600 bg-zinc-800 accent-blue-500 h-4 w-4" />
+                        <div className="flex-1 grid grid-cols-12 gap-2 items-center">
+                            <input type="text" value={localDrawing.killZoneConfig.ny.label} onChange={(e) => handleSessionChange('ny', 'label', e.target.value)} className="col-span-3 bg-black/30 border border-white/5 rounded px-2 py-1 text-xs text-white" />
+                            <div className="col-span-1"><input type="color" value={localDrawing.killZoneConfig.ny.color} onChange={(e) => handleSessionChange('ny', 'color', e.target.value)} className="w-6 h-6 rounded bg-transparent border-none cursor-pointer" /></div>
+                            <input type="time" value={localDrawing.killZoneConfig.ny.start} onChange={(e) => handleSessionChange('ny', 'start', e.target.value)} className="col-span-3 bg-black/30 border border-white/5 rounded px-1 py-1 text-xs text-white text-center" />
+                            <span className="col-span-1 text-center text-zinc-500">-</span>
+                            <input type="time" value={localDrawing.killZoneConfig.ny.end} onChange={(e) => handleSessionChange('ny', 'end', e.target.value)} className="col-span-3 bg-black/30 border border-white/5 rounded px-1 py-1 text-xs text-white text-center" />
+                        </div>
+                    </div>
+
+                    <div className="h-[1px] bg-white/10 my-3"></div>
+
+                    {/* Checkboxes Row */}
+                    <div className="flex flex-wrap gap-4 mb-3">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                            <input 
+                                type="checkbox" 
+                                checked={localDrawing.killZoneConfig.showHighLowLines} 
+                                onChange={(e) => setLocalDrawing({...localDrawing, killZoneConfig: {...localDrawing.killZoneConfig!, showHighLowLines: e.target.checked}})}
+                                className="rounded border-zinc-600 bg-zinc-800 accent-blue-500 h-3.5 w-3.5"
+                            />
+                            <span className="text-xs text-zinc-300">Line : Top/Bottom</span>
+                        </label>
+
+                        <label className="flex items-center gap-2 cursor-pointer">
+                            <input 
+                                type="checkbox" 
+                                checked={localDrawing.killZoneConfig.showAverage} 
+                                onChange={(e) => setLocalDrawing({...localDrawing, killZoneConfig: {...localDrawing.killZoneConfig!, showAverage: e.target.checked}})}
+                                className="rounded border-zinc-600 bg-zinc-800 accent-blue-500 h-3.5 w-3.5"
+                            />
+                            <span className="text-xs text-zinc-300">Average</span>
+                        </label>
+
+                        <label className="flex items-center gap-2 cursor-pointer">
+                            <input 
+                                type="checkbox" 
+                                checked={localDrawing.killZoneConfig.extend} 
+                                onChange={(e) => setLocalDrawing({...localDrawing, killZoneConfig: {...localDrawing.killZoneConfig!, extend: e.target.checked}})}
+                                className="rounded border-zinc-600 bg-zinc-800 accent-blue-500 h-3.5 w-3.5"
+                            />
+                            <span className="text-xs text-zinc-300">Extend</span>
+                        </label>
+
+                        <label className="flex items-center gap-2 cursor-pointer">
+                            <input 
+                                type="checkbox" 
+                                checked={localDrawing.killZoneConfig.showLabel} 
+                                onChange={(e) => setLocalDrawing({...localDrawing, killZoneConfig: {...localDrawing.killZoneConfig!, showLabel: e.target.checked}})}
+                                className="rounded border-zinc-600 bg-zinc-800 accent-blue-500 h-3.5 w-3.5"
+                            />
+                            <span className="text-xs text-zinc-300">Label</span>
+                        </label>
+                    </div>
+
+                    {/* Opacity Slider */}
+                    <div>
+                        <div className="flex justify-between text-xs text-zinc-400 mb-1">
+                            <span>Box Opacity</span>
+                            <span>{Math.round((localDrawing.killZoneConfig.opacity || 0.15) * 100)}%</span>
+                        </div>
+                        <input 
+                            type="range" 
+                            min="0" max="1" step="0.05"
+                            value={localDrawing.killZoneConfig.opacity !== undefined ? localDrawing.killZoneConfig.opacity : 0.15}
+                            onChange={(e) => setLocalDrawing({...localDrawing, killZoneConfig: {...localDrawing.killZoneConfig!, opacity: parseFloat(e.target.value)}})}
+                            className="w-full h-1.5 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                        />
+                    </div>
+                </div>
+            )}
+
+            {/* --- STANDARD STYLE UI --- */}
             {activeTab === 'STYLE' && (
                 <div className="space-y-3">
+                    {/* RECTANGLE Label Input */}
+                    {localDrawing.type === 'RECTANGLE' && (
+                        <div>
+                            <label className="text-[10px] text-zinc-500 block mb-1 font-bold">Zone Label</label>
+                            <input 
+                                type="text"
+                                value={localDrawing.text || ''}
+                                onChange={(e) => setLocalDrawing({...localDrawing, text: e.target.value})}
+                                placeholder="e.g. Supply Zone"
+                                className="w-full bg-black/20 border border-white/5 rounded-lg p-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50 placeholder-zinc-700"
+                            />
+                        </div>
+                    )}
+
                     <div>
-                        <label className="text-[10px] text-zinc-500 block mb-1 font-bold">Line Color</label>
+                        <label className="text-[10px] text-zinc-500 block mb-1 font-bold">{localDrawing.type === 'TEXT' ? 'Text Color' : 'Line Color'}</label>
                         <div className="flex items-center space-x-2 bg-black/20 p-1.5 rounded-lg border border-white/5">
                             <input 
                                 type="color" 
@@ -88,31 +260,35 @@ export const DrawingSettingsModal: React.FC<Props> = ({ drawing, onSave, onClose
                             <span className="text-xs font-mono text-zinc-400">{localDrawing.color}</span>
                         </div>
                     </div>
-                    <div>
-                        <label className="text-[10px] text-zinc-500 block mb-1 font-bold">Line Width</label>
-                        <select 
-                            value={localDrawing.lineWidth}
-                            onChange={(e) => setLocalDrawing({...localDrawing, lineWidth: Number(e.target.value)})}
-                            className="w-full bg-black/20 border border-white/5 rounded-lg p-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50"
-                        >
-                            <option value={1}>1px</option>
-                            <option value={2}>2px</option>
-                            <option value={3}>3px</option>
-                            <option value={4}>4px</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label className="text-[10px] text-zinc-500 block mb-1 font-bold">Line Style</label>
-                        <select 
-                            value={localDrawing.lineStyle}
-                            onChange={(e) => setLocalDrawing({...localDrawing, lineStyle: e.target.value as LineStyle})}
-                            className="w-full bg-black/20 border border-white/5 rounded-lg p-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50"
-                        >
-                            <option value="solid">Solid</option>
-                            <option value="dashed">Dashed</option>
-                            <option value="dotted">Dotted</option>
-                        </select>
-                    </div>
+                    {localDrawing.type !== 'TEXT' && (
+                        <>
+                            <div>
+                                <label className="text-[10px] text-zinc-500 block mb-1 font-bold">Line Width</label>
+                                <select 
+                                    value={localDrawing.lineWidth}
+                                    onChange={(e) => setLocalDrawing({...localDrawing, lineWidth: Number(e.target.value)})}
+                                    className="w-full bg-black/20 border border-white/5 rounded-lg p-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50"
+                                >
+                                    <option value={1}>1px</option>
+                                    <option value={2}>2px</option>
+                                    <option value={3}>3px</option>
+                                    <option value={4}>4px</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label className="text-[10px] text-zinc-500 block mb-1 font-bold">Line Style</label>
+                                <select 
+                                    value={localDrawing.lineStyle}
+                                    onChange={(e) => setLocalDrawing({...localDrawing, lineStyle: e.target.value as LineStyle})}
+                                    className="w-full bg-black/20 border border-white/5 rounded-lg p-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50"
+                                >
+                                    <option value="solid">Solid</option>
+                                    <option value="dashed">Dashed</option>
+                                    <option value="dotted">Dotted</option>
+                                </select>
+                            </div>
+                        </>
+                    )}
                 </div>
             )}
 
@@ -136,23 +312,25 @@ export const DrawingSettingsModal: React.FC<Props> = ({ drawing, onSave, onClose
                         </div>
                      </div>
 
-                     <div className="p-2.5 bg-white/5 rounded-lg border border-white/5">
-                        <div className="text-[10px] font-bold text-zinc-400 mb-1.5">Point 2 (End)</div>
-                        <div className="grid grid-cols-1 gap-2">
-                             <div>
-                                 <label className="text-[9px] text-zinc-500 block mb-0.5">Price</label>
-                                 <input 
-                                    type="number" step="0.00001"
-                                    value={localDrawing.p2.price}
-                                    onChange={(e) => setLocalDrawing({
-                                        ...localDrawing, 
-                                        p2: { ...localDrawing.p2, price: parseFloat(e.target.value) }
-                                    })}
-                                    className="w-full bg-black/30 border border-white/5 rounded-md p-1 text-xs text-zinc-200 outline-none font-mono"
-                                 />
-                             </div>
-                        </div>
-                     </div>
+                     {localDrawing.type !== 'TEXT' && localDrawing.type !== 'KILLZONE' && (
+                         <div className="p-2.5 bg-white/5 rounded-lg border border-white/5">
+                            <div className="text-[10px] font-bold text-zinc-400 mb-1.5">Point 2 (End)</div>
+                            <div className="grid grid-cols-1 gap-2">
+                                 <div>
+                                     <label className="text-[9px] text-zinc-500 block mb-0.5">Price</label>
+                                     <input 
+                                        type="number" step="0.00001"
+                                        value={localDrawing.p2.price}
+                                        onChange={(e) => setLocalDrawing({
+                                            ...localDrawing, 
+                                            p2: { ...localDrawing.p2, price: parseFloat(e.target.value) }
+                                        })}
+                                        className="w-full bg-black/30 border border-white/5 rounded-md p-1 text-xs text-zinc-200 outline-none font-mono"
+                                     />
+                                 </div>
+                            </div>
+                         </div>
+                     )}
                 </div>
             )}
 

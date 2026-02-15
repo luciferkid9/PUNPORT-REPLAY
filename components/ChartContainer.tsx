@@ -1,8 +1,7 @@
 
-// Add React to the imports to resolve namespace errors
 import React, { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react';
-import { createChart, ColorType, IChartApi, ISeriesApi, MouseEventParams, LogicalRange, IPriceLine } from 'lightweight-charts';
-import { Candle, Trade, OrderSide, OrderStatus, ToolType, DrawingObject, Point, IndicatorType, DrawingSettings, SymbolType } from '../types';
+import { createChart, ColorType, IChartApi, ISeriesApi, MouseEventParams, LogicalRange, IPriceLine, TickMarkType } from 'lightweight-charts';
+import { Candle, Trade, OrderStatus, ToolType, DrawingObject, Point, IndicatorConfig, DrawingSettings, SymbolType, SessionConfig, IndicatorType, DragTradeUpdate } from '../types';
 
 interface Props {
   data: Candle[];
@@ -10,20 +9,23 @@ interface Props {
   activeTool: ToolType;
   magnetMode: boolean;
   drawingSettings: DrawingSettings;
-  indicators: IndicatorType[];
-  // Fix: Add activeSymbol to Props to satisfy DrawingObject requirements
+  indicatorConfigs: IndicatorConfig[];
   activeSymbol: SymbolType;
-  interval: number; // Added interval prop for accurate time calc
-  smaData?: { time: number; value: number }[];
+  interval: number;
+  emaDataMap?: Map<string, { time: number; value: number }[]>; // Changed from smaData to Map
   rsiData?: { time: number; value: number }[];
   macdData?: { macd: { time: number; value: number }[], signal: { time: number; value: number }[], histogram: { time: number; value: number }[] };
   onDrawingCreate?: (d: DrawingObject) => void;
   onDrawingUpdate?: (d: DrawingObject) => void;
   onDrawingEdit?: (d: DrawingObject) => void;
   onDrawingSelect?: (id: string | null) => void;
-  onDrawingDelete?: (id: string) => void; // Added onDrawingDelete prop
+  onDrawingDelete?: (id: string) => void;
   onModifyTrade?: (id: string, sl: number, tp: number) => void;
-  onLoadMore?: () => void; // New prop for lazy loading
+  onModifyOrderEntry?: (id: string, newEntry: number) => void;
+  onTradeDrag?: (update: DragTradeUpdate | null) => void; 
+  onLoadMore?: () => void;
+  onIndicatorDblClick: (config: IndicatorConfig) => void; 
+  onRemoveIndicator: (id: string) => void;
   drawings: DrawingObject[];
   selectedDrawingId: string | null;
   pricePrecision?: number; 
@@ -35,7 +37,7 @@ export interface ChartRef {
 
 interface DragState {
     id: string;
-    point: 'p1' | 'p2' | 'all' | 'target' | 'stop';
+    point: 'p1' | 'p2' | 'all' | 'target' | 'stop' | 'entry';
     initialP1: Point;
     initialP2: Point;
     initialTarget?: number;
@@ -45,36 +47,59 @@ interface DragState {
 
 interface DragTradeState {
     id: string;
-    type: 'SL' | 'TP';
+    type: 'SL' | 'TP' | 'ENTRY';
     startPrice: number;
     currentPrice: number;
 }
 
+// CONSTANT: Seconds offset for Bangkok Time (UTC+7)
+const BANGKOK_OFFSET = 25200; 
+
+const getSessionTimestamp = (dateStr: string, timeStr: string): number => {
+    const [year, month, day] = dateStr.split('-').map(Number);
+    const [hour, minute] = timeStr.split(':').map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day, hour, minute));
+    return (date.getTime() / 1000) - BANGKOK_OFFSET;
+};
+
 export const ChartContainer = forwardRef<ChartRef, Props>(({ 
-    data, trades, activeTool, magnetMode, drawingSettings, indicators, 
-    activeSymbol, interval, // Destructure interval
-    smaData, rsiData, macdData, 
-    onDrawingCreate, onDrawingUpdate, onDrawingEdit, onDrawingSelect, onDrawingDelete, onModifyTrade, onLoadMore, drawings, selectedDrawingId,
+    data, trades, activeTool, magnetMode, drawingSettings, indicatorConfigs, 
+    activeSymbol, interval,
+    emaDataMap, rsiData, macdData, 
+    onDrawingCreate, onDrawingUpdate, onDrawingEdit, onDrawingSelect, onDrawingDelete, onModifyTrade, onModifyOrderEntry, onTradeDrag, onLoadMore, onIndicatorDblClick, onRemoveIndicator, drawings, selectedDrawingId,
     pricePrecision = 5
 }, ref) => {
   const chartContainerRef = useRef<HTMLDivElement>(null);
-  const oscContainerRef = useRef<HTMLDivElement>(null); 
   const wrapperRef = useRef<HTMLDivElement>(null);
   
-  const chartRef = useRef<IChartApi | null>(null);
-  const oscChartRef = useRef<IChartApi | null>(null);
+  const indicatorChartRefs = useRef<Map<string, IChartApi>>(new Map());
+  const indicatorContainerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  
+  const [indicatorHeights, setIndicatorHeights] = useState<Record<string, number>>({});
+  const resizingRef = useRef<{ type: string, startY: number, startHeight: number } | null>(null);
 
+  // New: State for Indicator Legend Values
+  const [indicatorValues, setIndicatorValues] = useState<Record<string, any>>({});
+
+  const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
-  const smaSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  
+  // Replaced single SMA Ref with Map for multiple EMAs
+  const emaSeriesRefs = useRef<Map<string, ISeriesApi<"Line">>>(new Map());
   
   const entryLinesRef = useRef<Map<string, IPriceLine>>(new Map());
 
   const rsiSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  // Refs to track RSI Price Lines for cleanup
+  const rsiUpperLineRef = useRef<IPriceLine | null>(null);
+  const rsiLowerLineRef = useRef<IPriceLine | null>(null);
+
   const macdSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const macdSignalSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
-  const macdHistSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
-
+  const macdHistogramSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  
   const [tempPoint, setTempPoint] = useState<Point | null>(null);
+  const [hoverPoint, setHoverPoint] = useState<Point | null>(null); 
   const [svgPaths, setSvgPaths] = useState<React.ReactNode[]>([]);
   
   const [activeDragObject, setActiveDragObject] = useState<DrawingObject | null>(null);
@@ -84,7 +109,6 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
 
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
 
-  // Refs for props accessed in closures (Fixes Stale Closure Issues)
   const activeToolRef = useRef(activeTool);
   const magnetModeRef = useRef(magnetMode);
   const drawingSettingsRef = useRef(drawingSettings);
@@ -104,14 +128,9 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
   useEffect(() => { onDrawingSelectRef.current = onDrawingSelect; }, [onDrawingSelect]);
   useEffect(() => { intervalRef.current = interval; }, [interval]);
 
-  // --- KEYBOARD LISTENERS FOR DELETION ---
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-        // Prevent deletion if user is typing in an input field
-        if (document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement) {
-            return;
-        }
-
+        if (document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement) return;
         if ((e.key === 'Delete' || e.key === 'Backspace') && selectedDrawingId) {
             if (onDrawingDelete) {
                 onDrawingDelete(selectedDrawingId);
@@ -119,16 +138,13 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
             }
         }
     };
-
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedDrawingId, onDrawingDelete, onDrawingSelect]);
 
   useImperativeHandle(ref, () => ({
     fitContent: () => {
-        if (chartRef.current) {
-            chartRef.current.timeScale().fitContent();
-        }
+        chartRef.current?.timeScale().fitContent();
     }
   }));
 
@@ -153,10 +169,34 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
     }
 
     const p1 = currentData[lastIdx].time;
-    const candleInterval = intervalRef.current || 60; // Use prop interval
+    const candleInterval = intervalRef.current || 60;
     const diff = cleanLogical - lastIdx;
-    
     return p1 + (diff * candleInterval);
+  };
+
+  // ... (Resize handlers) ...
+  const handleResizeStart = (e: React.MouseEvent, type: string) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const currentHeight = indicatorHeights[type] || 160;
+      resizingRef.current = { type, startY: e.clientY, startHeight: currentHeight };
+      document.body.style.cursor = 'row-resize';
+      document.addEventListener('mousemove', handleResizeMove);
+      document.addEventListener('mouseup', handleResizeEnd);
+  };
+
+  const handleResizeMove = (e: MouseEvent) => {
+      if (!resizingRef.current) return;
+      const delta = e.clientY - resizingRef.current.startY;
+      const newHeight = Math.max(50, Math.min(600, resizingRef.current.startHeight - delta));
+      setIndicatorHeights(prev => ({ ...prev, [resizingRef.current!.type]: newHeight }));
+  };
+
+  const handleResizeEnd = () => {
+      resizingRef.current = null;
+      document.body.style.cursor = 'default';
+      document.removeEventListener('mousemove', handleResizeMove);
+      document.removeEventListener('mouseup', handleResizeEnd);
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
@@ -166,61 +206,59 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
       const y = e.clientY - rect.top;
       setMousePos({ x, y });
 
-      // 1. Handle Trade Line Dragging (SL/TP)
+      const logical = chartRef.current.timeScale().coordinateToLogical(x);
+      const rawPrice = candleSeriesRef.current.coordinateToPrice(y);
+      if (logical !== null && rawPrice !== null) {
+          const time = getTimeFromLogical(logical);
+          if (time) {
+              const finalPrice = getMagnetPrice(time, rawPrice);
+              setHoverPoint({ time, price: finalPrice });
+          }
+      }
+
       if (dragTrade) {
           try {
               const price = candleSeriesRef.current.coordinateToPrice(y);
               if (price !== null) {
                   setDragTrade(prev => prev ? { ...prev, currentPrice: price } : null);
+                  // Trigger Parent Update for Real-time UI
+                  if (onTradeDrag) {
+                      onTradeDrag({ id: dragTrade.id, type: dragTrade.type, price: price });
+                  }
               }
           } catch(e) {}
       }
 
-      // 2. Handle Drawing Object Dragging (Fibo, Trendline, Positions)
       if (dragTarget && activeDragObject) {
-          const logical = chartRef.current.timeScale().coordinateToLogical(x);
-          const rawPrice = candleSeriesRef.current.coordinateToPrice(y);
-
           if (logical !== null && rawPrice !== null) {
               const time = getTimeFromLogical(logical);
-              
               if (time) {
-                  // Apply magnet if dragging a specific point, not when moving the whole object (unless we want 'all' to snap too, but usually not)
-                  const finalPrice = (dragTarget.point !== 'all' && dragTarget.point !== 'target' && dragTarget.point !== 'stop') 
-                        ? getMagnetPrice(time, rawPrice) 
-                        : rawPrice;
-
-                  const newObj = { ...activeDragObject };
+                  // For entry price drag, we allow rawPrice (vertical move), else use magnet
+                  const useMagnet = dragTarget.point !== 'all' && dragTarget.point !== 'target' && dragTarget.point !== 'stop' && dragTarget.point !== 'entry';
+                  const finalPrice = useMagnet ? getMagnetPrice(time, rawPrice) : rawPrice;
                   
-                  // Delta calculation for moving the entire object
+                  const newObj = { ...activeDragObject };
                   const timeDiff = time - dragTarget.initialMouse.time;
                   const priceDiff = finalPrice - dragTarget.initialMouse.price;
 
                   if (dragTarget.point === 'all') {
-                      newObj.p1 = { 
-                          time: dragTarget.initialP1.time + timeDiff, 
-                          price: dragTarget.initialP1.price + priceDiff 
-                      };
-                      newObj.p2 = { 
-                          time: dragTarget.initialP2.time + timeDiff, 
-                          price: dragTarget.initialP2.price + priceDiff 
-                      };
-                      if (dragTarget.initialTarget !== undefined && newObj.targetPrice !== undefined) {
-                          newObj.targetPrice = dragTarget.initialTarget + priceDiff;
-                      }
-                      if (dragTarget.initialStop !== undefined && newObj.stopPrice !== undefined) {
-                          newObj.stopPrice = dragTarget.initialStop + priceDiff;
-                      }
+                      newObj.p1 = { time: dragTarget.initialP1.time + timeDiff, price: dragTarget.initialP1.price + priceDiff };
+                      newObj.p2 = { time: dragTarget.initialP2.time + timeDiff, price: dragTarget.initialP2.price + priceDiff };
+                      if (dragTarget.initialTarget !== undefined && newObj.targetPrice !== undefined) newObj.targetPrice = dragTarget.initialTarget + priceDiff;
+                      if (dragTarget.initialStop !== undefined && newObj.stopPrice !== undefined) newObj.stopPrice = dragTarget.initialStop + priceDiff;
                   } else if (dragTarget.point === 'p1') {
                       newObj.p1 = { time: time, price: finalPrice };
                   } else if (dragTarget.point === 'p2') {
                       newObj.p2 = { time: time, price: finalPrice };
                   } else if (dragTarget.point === 'target') {
-                      newObj.targetPrice = rawPrice; // Target usually doesn't snap to magnet
+                      newObj.targetPrice = rawPrice; 
                   } else if (dragTarget.point === 'stop') {
-                      newObj.stopPrice = rawPrice; // Stop usually doesn't snap to magnet
+                      newObj.stopPrice = rawPrice; 
+                  } else if (dragTarget.point === 'entry') {
+                      // Move Entry (Vertical only)
+                      newObj.p1 = { ...newObj.p1, price: rawPrice };
+                      newObj.p2 = { ...newObj.p2, price: rawPrice }; // Keep aligned if flat
                   }
-
                   setActiveDragObject(newObj);
               }
           }
@@ -229,17 +267,21 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
   };
   
   const handleMouseUp = () => {
-      // Finish Trade Dragging
-      if (dragTrade && onModifyTrade) {
+      if (dragTrade) {
           const trade = trades.find(t => t.id === dragTrade.id);
           if (trade) {
-              const newSl = dragTrade.type === 'SL' ? dragTrade.currentPrice : trade.stopLoss;
-              const newTp = dragTrade.type === 'TP' ? dragTrade.currentPrice : trade.takeProfit;
-              onModifyTrade(dragTrade.id, newSl, newTp);
+              if (dragTrade.type === 'SL' && onModifyTrade) {
+                  onModifyTrade(dragTrade.id, dragTrade.currentPrice, trade.takeProfit);
+              } else if (dragTrade.type === 'TP' && onModifyTrade) {
+                  onModifyTrade(dragTrade.id, trade.stopLoss, dragTrade.currentPrice);
+              } else if (dragTrade.type === 'ENTRY' && onModifyOrderEntry) {
+                  onModifyOrderEntry(dragTrade.id, dragTrade.currentPrice);
+              }
           }
           setDragTrade(null);
+          // Clear Parent Drag State
+          if (onTradeDrag) onTradeDrag(null);
       }
-      // Finish Object Dragging
       if (dragTarget && activeDragObject) {
          if (onDrawingUpdate) onDrawingUpdate(activeDragObject);
          setDragTarget(null);
@@ -247,24 +289,74 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
       }
   };
 
-  // 1. INITIALIZE CHART
+  const startDrag = (e: React.MouseEvent, d: DrawingObject, pointType: 'all' | 'p1' | 'p2' | 'target' | 'stop' | 'entry') => {
+      e.stopPropagation();
+      e.preventDefault();
+      if (!chartRef.current || !candleSeriesRef.current || !chartContainerRef.current) return;
+      
+      const rect = chartContainerRef.current.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      
+      const logical = chartRef.current.timeScale().coordinateToLogical(x);
+      const price = candleSeriesRef.current.coordinateToPrice(y);
+      if (logical === null || price === null) return;
+      const time = getTimeFromLogical(logical); 
+      if(!time) return;
+
+      let targetId = d.id;
+      let objectToDrag = d;
+
+      if ((e.ctrlKey || e.metaKey) && onDrawingCreate) {
+           const newId = Math.random().toString(36).substr(2, 9);
+           objectToDrag = { ...d, id: newId };
+           targetId = newId;
+           onDrawingCreate(objectToDrag);
+      }
+
+      setDragTarget({
+          id: targetId,
+          point: pointType,
+          initialP1: objectToDrag.p1,
+          initialP2: objectToDrag.p2,
+          initialMouse: { time, price },
+          initialTarget: objectToDrag.targetPrice,
+          initialStop: objectToDrag.stopPrice
+      });
+      setActiveDragObject(objectToDrag);
+      if (onDrawingSelect) onDrawingSelect(targetId);
+  };
+
   useEffect(() => {
     if (!chartContainerRef.current) return;
 
     const customTimeFormatter = (time: number) => {
         const date = new Date(time * 1000);
         return date.toLocaleString('th-TH', { 
-            timeZone: 'Asia/Bangkok',
-            day: '2-digit', month: 'short', year: 'numeric',
+            timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', year: 'numeric',
             hour: '2-digit', minute: '2-digit', hour12: false 
         });
     };
 
     const chart = createChart(chartContainerRef.current, {
-      layout: { background: { type: ColorType.Solid, color: '#18181b' }, textColor: '#a1a1aa' }, // zinc-900 bg, zinc-400 text
-      grid: { vertLines: { color: '#27272a' }, horzLines: { color: '#27272a' } }, // zinc-800 grid
+      layout: { background: { type: ColorType.Solid, color: '#18181b' }, textColor: '#a1a1aa' },
+      grid: { vertLines: { color: '#27272a' }, horzLines: { color: '#27272a' } },
       localization: { locale: 'th-TH', dateFormat: 'dd MMM yyyy', timeFormatter: customTimeFormatter },
-      timeScale: { borderColor: '#3f3f46', timeVisible: true, secondsVisible: false, rightOffset: 50, barSpacing: 10 },
+      timeScale: { 
+          borderColor: '#3f3f46', 
+          timeVisible: true, 
+          secondsVisible: false, 
+          rightOffset: 50, 
+          barSpacing: 10,
+          tickMarkFormatter: (time: number, tickMarkType: TickMarkType, locale: string) => {
+              const date = new Date(time * 1000);
+              const options: Intl.DateTimeFormatOptions = { timeZone: 'Asia/Bangkok' };
+              if (tickMarkType === 0) return date.toLocaleDateString('th-TH', { ...options, year: 'numeric' });
+              if (tickMarkType === 1) return date.toLocaleDateString('th-TH', { ...options, month: 'short' });
+              if (tickMarkType === 2) return date.toLocaleDateString('th-TH', { ...options, day: 'numeric', month: 'short' });
+              return date.toLocaleTimeString('th-TH', { ...options, hour: '2-digit', minute: '2-digit', hour12: false });
+          }
+      },
       rightPriceScale: { borderColor: '#3f3f46' },
       crosshair: { mode: 1, vertLine: { color: '#71717a', labelBackgroundColor: '#3f3f46' }, horzLine: { color: '#71717a', labelBackgroundColor: '#3f3f46' } },
       width: chartContainerRef.current.clientWidth,
@@ -276,20 +368,10 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
       priceFormat: { type: 'price', precision: pricePrecision, minMove: 1 / Math.pow(10, pricePrecision) },
     });
 
-    const smaSeries = chart.addLineSeries({ 
-        color: '#2962ff', lineWidth: 2, title: 'SMA',
-        priceFormat: { type: 'price', precision: pricePrecision, minMove: 1 / Math.pow(10, pricePrecision) }
-    });
-
     candleSeriesRef.current = candleSeries;
-    smaSeriesRef.current = smaSeries;
     chartRef.current = chart;
 
-    if (dataRef.current.length > 0) {
-        candleSeries.setData(dataRef.current as any);
-    }
-    
-    // RE-ADD ENTRIES ON MOUNT (Fix for lines disappearing on symbol switch)
+    if (dataRef.current.length > 0) candleSeries.setData(dataRef.current as any);
     entryLinesRef.current.clear();
     
     const resizeObserver = new ResizeObserver(entries => {
@@ -310,66 +392,76 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
             if (logical !== null) time = getTimeFromLogical(logical);
             if (!time && param.time) time = param.time as number;
             
-            // Critical check for tool creation
-            if (!time) {
-                // If we failed to get time (e.g. empty space click), verify if we can extrapolate
-                if (logical !== null) {
-                     // Force extrapolation attempt if standard check failed
-                     const currentData = dataRef.current;
-                     if (currentData.length > 0) {
-                         const lastIdx = currentData.length - 1;
-                         const p1 = currentData[lastIdx].time;
-                         const candleInterval = intervalRef.current || 60;
-                         const diff = Math.round(logical) - lastIdx;
-                         time = p1 + (diff * candleInterval);
-                     }
-                }
-            }
-            
             if (!time) return;
 
             let rawPrice = candleSeriesRef.current.coordinateToPrice(param.point.y);
             if (rawPrice === null) return;
-            const currentData = dataRef.current;
-            const isFuture = logical !== null && logical > (currentData.length - 1);
-            const finalPrice = (!isFuture) ? getMagnetPrice(time, rawPrice) : rawPrice;
+            const finalPrice = getMagnetPrice(time, rawPrice);
             const clickedPoint: Point = { time: time, price: finalPrice };
 
-            if (['TRENDLINE', 'FIB', 'LONG_POSITION', 'SHORT_POSITION'].includes(activeToolRef.current)) {
+            if (activeToolRef.current === 'TEXT') {
+                if (onDrawingCreateRef.current) {
+                    onDrawingCreateRef.current({
+                        id: Math.random().toString(36).substr(2, 9),
+                        symbol: activeSymbolRef.current,
+                        type: 'TEXT',
+                        p1: clickedPoint,
+                        p2: clickedPoint, 
+                        visible: true,
+                        locked: false,
+                        color: '#ffffff',
+                        lineWidth: 1,
+                        lineStyle: 'solid',
+                        text: 'Text',
+                        fontSize: 14
+                    });
+                }
+                return;
+            }
+
+            if (['TRENDLINE', 'FIB', 'LONG_POSITION', 'SHORT_POSITION', 'RECTANGLE'].includes(activeToolRef.current)) {
                 setTempPoint(prev => {
                     if (!prev) return clickedPoint;
+                    
                     if (onDrawingCreateRef.current) {
                         const isLong = activeToolRef.current === 'LONG_POSITION';
                         const isShort = activeToolRef.current === 'SHORT_POSITION';
-                        let targetPrice = undefined;
-                        let stopPrice = undefined;
+                        let targetPrice = undefined, stopPrice = undefined;
 
                         if (isLong || isShort) {
                             const entryP = prev.price;
                             const currentP = clickedPoint.price;
-                            
-                            // If user just clicks without dragging much (small diff), use default risk
+                            const dist = Math.abs(currentP - entryP);
                             const minDiff = entryP * 0.0005;
-                            if (Math.abs(currentP - entryP) < minDiff) {
-                                // Default Creation
-                                const risk = entryP * 0.002; // 0.2% default risk distance
+                            
+                            if (dist < minDiff) {
+                                const risk = entryP * 0.002;
                                 stopPrice = isLong ? entryP - risk : entryP + risk;
-                                targetPrice = isLong ? entryP + (risk * 2) : entryP - (risk * 2); // 1:2 RR default
+                                targetPrice = isLong ? entryP + (risk * 2) : entryP - (risk * 2);
                             } else {
-                                // Drag Creation: Mouse position defines the STOP LOSS primarily, or Target?
-                                // Standard UX: Drag to Target is intuitive.
-                                targetPrice = currentP;
-                                // Auto set Stop Loss to 1/2 of reward to enforce 1:2 initially, or fixed distance?
-                                // Let's make it simpler: Target is mouse, Stop is calculated as 0.5 ratio
-                                const reward = Math.abs(targetPrice - entryP);
-                                const risk = reward * 0.5;
-                                stopPrice = isLong ? entryP - risk : entryP + risk;
+                                if (isLong) {
+                                    if (currentP > entryP) {
+                                        targetPrice = currentP;
+                                        stopPrice = entryP - (dist * 0.5);
+                                    } else {
+                                        stopPrice = currentP;
+                                        targetPrice = entryP + (dist * 2);
+                                    }
+                                } else { 
+                                    if (currentP < entryP) {
+                                        targetPrice = currentP;
+                                        stopPrice = entryP + (dist * 0.5);
+                                    } else {
+                                        stopPrice = currentP;
+                                        targetPrice = entryP - (dist * 2);
+                                    }
+                                }
                             }
                         }
                         
                         onDrawingCreateRef.current({
                             id: Math.random().toString(36).substr(2, 9),
-                            symbol: activeSymbolRef.current, // Use Ref here
+                            symbol: activeSymbolRef.current,
                             type: activeToolRef.current,
                             p1: prev, p2: clickedPoint, visible: true, locked: false,
                             color: drawingSettingsRef.current.color, lineWidth: drawingSettingsRef.current.lineWidth, lineStyle: drawingSettingsRef.current.lineStyle,
@@ -387,7 +479,6 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
         chart.unsubscribeClick(handleClick);
         chart.remove();
         chartRef.current = null;
-        candleSeriesRef.current = null;
     };
   }, []);
 
@@ -399,68 +490,79 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
      }
   }, [pricePrecision]);
 
-  // Update Data for Candle Series
   useEffect(() => {
-     if (candleSeriesRef.current) {
-        candleSeriesRef.current.setData(data as any);
-     }
+     if (candleSeriesRef.current) candleSeriesRef.current.setData(data as any);
   }, [data]);
 
-  // Update Data for Indicator Series
+  // Handle EMA (Multiple Lines)
   useEffect(() => {
-      // SMA
-      if (smaSeriesRef.current) {
-          if (smaData && smaData.length > 0) {
-              smaSeriesRef.current.setData(smaData as any);
-              smaSeriesRef.current.applyOptions({ visible: indicators.includes('SMA') });
-          } else {
-              smaSeriesRef.current.setData([]);
+      if (!chartRef.current || !emaDataMap) return;
+      
+      const activeEmaConfigs = indicatorConfigs.filter(c => c.type === 'EMA');
+      const activeIds = new Set(activeEmaConfigs.map(c => c.id));
+
+      // Remove obsolete series
+      emaSeriesRefs.current.forEach((series, id) => {
+          if (!activeIds.has(id)) {
+              chartRef.current!.removeSeries(series);
+              emaSeriesRefs.current.delete(id);
           }
-      }
+      });
 
-      // RSI
-      if (rsiSeriesRef.current && rsiData) {
-          rsiSeriesRef.current.setData(rsiData as any);
-      }
+      // Update or Create series
+      activeEmaConfigs.forEach(config => {
+          if (!config.visible) {
+              const existing = emaSeriesRefs.current.get(config.id);
+              if (existing) {
+                  chartRef.current!.removeSeries(existing);
+                  emaSeriesRefs.current.delete(config.id);
+              }
+              return;
+          }
 
-      // MACD
-      if (macdData) {
-          if (macdSeriesRef.current) macdSeriesRef.current.setData(macdData.macd as any);
-          if (macdSignalSeriesRef.current) macdSignalSeriesRef.current.setData(macdData.signal as any);
-          if (macdHistSeriesRef.current) macdHistSeriesRef.current.setData(macdData.histogram as any);
-      }
-  }, [data, smaData, rsiData, macdData, indicators]);
+          let series = emaSeriesRefs.current.get(config.id);
+          const seriesOptions = { 
+              color: config.color || '#2962ff', 
+              lineWidth: 2, 
+              title: '', // Remove title to prevent any tooltip label
+              priceFormat: { type: 'price', precision: pricePrecision, minMove: 1 / Math.pow(10, pricePrecision) },
+              priceLineVisible: false,
+              lastValueVisible: false,
+              crosshairMarkerVisible: false
+          };
 
-  // 3. ENTRY LINES LOGIC - FIXED: More robust update trigger
+          if (!series) {
+              series = chartRef.current!.addLineSeries(seriesOptions);
+              emaSeriesRefs.current.set(config.id, series);
+          } else {
+              series.applyOptions(seriesOptions);
+          }
+
+          const data = emaDataMap.get(config.id);
+          if (data && data.length > 0) {
+              series.setData(data as any);
+          }
+      });
+  }, [data, emaDataMap, indicatorConfigs, pricePrecision]);
+
   useEffect(() => {
     if (!candleSeriesRef.current || !chartRef.current) return;
     
-    // Convert trades to a string ID signature to force effect re-run if ids change
-    const activeTradeIds = new Set(trades.filter(t => t.status !== OrderStatus.CLOSED).map(t => t.id));
-    
-    // Cleanup old lines that are no longer in the active trade list
     entryLinesRef.current.forEach((line, id) => {
-        if (!activeTradeIds.has(id)) {
+        const trade = trades.find(t => t.id === id);
+        if (!trade || trade.status === OrderStatus.CLOSED || trade.status === OrderStatus.PENDING) {
              try { candleSeriesRef.current?.removePriceLine(line); } catch(e) {}
              entryLinesRef.current.delete(id);
         }
     });
 
-    // Add or Update lines
     trades.forEach(t => {
-        if (t.status === OrderStatus.CLOSED) return;
-        
-        // If line doesn't exist, create it
+        if (t.status === OrderStatus.CLOSED || t.status === OrderStatus.PENDING) return;
         if (!entryLinesRef.current.has(t.id)) {
-            const isPending = t.status === OrderStatus.PENDING;
             try {
                 const line = candleSeriesRef.current!.createPriceLine({ 
-                    price: t.entryPrice, 
-                    color: isPending ? '#f59e0b' : '#787b86', 
-                    lineWidth: 1, 
-                    lineStyle: 2, 
-                    axisLabelVisible: true, 
-                    title: `${isPending ? (t.type === 'LIMIT' ? 'LIMIT' : 'STOP') : 'ENTRY'} #${t.id.substr(0,4)}` 
+                    price: t.entryPrice, color: '#787b86', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, 
+                    title: `ENTRY #${t.id.substr(0,4)}` 
                 });
                 entryLinesRef.current.set(t.id, line);
             } catch(e) {}
@@ -468,313 +570,765 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
     });
   }, [trades, data, pricePrecision]); 
 
-  // Oscillator Logic
+  const activeIndicators = indicatorConfigs.filter(c => c.visible && c.type !== 'EMA'); 
+
   useEffect(() => {
-     const needsOsc = indicators.includes('RSI') || indicators.includes('MACD');
-     if (!needsOsc) {
-         if (oscChartRef.current) { oscChartRef.current.remove(); oscChartRef.current = null; }
-         return;
-     }
-     if (!oscContainerRef.current) return;
-     if (oscChartRef.current) oscChartRef.current.remove();
-     
-     const customTimeFormatter = (time: number) => {
-        const date = new Date(time * 1000);
-        return date.toLocaleString('th-TH', { 
-            timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', year: 'numeric',
-            hour: '2-digit', minute: '2-digit', hour12: false 
-        });
-     };
+     const activeTypes = new Set(activeIndicators.map(c => c.type));
+     indicatorChartRefs.current.forEach((chart, type) => {
+         if (!activeTypes.has(type as any)) {
+             chart.remove();
+             indicatorChartRefs.current.delete(type);
+             if (type === 'MACD') {
+                 macdSeriesRef.current = null;
+                 macdSignalSeriesRef.current = null;
+                 macdHistogramSeriesRef.current = null;
+             }
+             if (type === 'RSI') {
+                 rsiSeriesRef.current = null;
+                 rsiUpperLineRef.current = null;
+                 rsiLowerLineRef.current = null;
+             }
+         }
+     });
 
-     const chart = createChart(oscContainerRef.current, {
-        layout: { background: { type: ColorType.Solid, color: '#18181b' }, textColor: '#a1a1aa' },
-        grid: { vertLines: { color: '#27272a' }, horzLines: { color: '#27272a' } },
-        localization: { locale: 'th-TH', dateFormat: 'dd MMM yyyy', timeFormatter: customTimeFormatter },
-        timeScale: { borderColor: '#3f3f46', timeVisible: true, visible: true, secondsVisible: false, rightOffset: 50, barSpacing: 10 },
-        // UPDATED: Added autoScale: true to allow tiny MACD values to be seen
-        rightPriceScale: { borderColor: '#3f3f46', autoScale: true }, 
-        crosshair: { mode: 1 },
-        width: oscContainerRef.current.clientWidth, height: oscContainerRef.current.clientHeight
-      });
+     activeIndicators.forEach(config => {
+         const type = config.type;
+         const container = indicatorContainerRefs.current.get(type);
+         if (!container) return;
 
-      if (indicators.includes('RSI')) {
-          rsiSeriesRef.current = chart.addLineSeries({ color: '#7e57c2', lineWidth: 2, title: 'RSI' });
-          if (rsiData) rsiSeriesRef.current.setData(rsiData as any);
-      }
-      
-      if (indicators.includes('MACD')) {
-          // UPDATED: High Precision format (6 decimals) for MACD
-          const macdFormat = { type: 'price', precision: 6, minMove: 0.000001 };
-          
-          macdHistSeriesRef.current = chart.addHistogramSeries({ 
-              color: '#2962ff', title: 'Hist', priceFormat: macdFormat 
-          });
-          
-          macdSeriesRef.current = chart.addLineSeries({ 
-              color: '#2962ff', lineWidth: 2, title: 'MACD', priceFormat: macdFormat 
-          });
-          
-          macdSignalSeriesRef.current = chart.addLineSeries({ 
-              color: '#f57c00', lineWidth: 2, title: 'Signal', priceFormat: macdFormat 
-          });
-          
-          if (macdData) {
-              macdHistSeriesRef.current.setData(macdData.histogram as any);
-              macdSeriesRef.current.setData(macdData.macd as any);
-              macdSignalSeriesRef.current.setData(macdData.signal as any);
+         let chart = indicatorChartRefs.current.get(type);
+         if (!chart) {
+             const customTimeFormatter = (time: number) => {
+                const date = new Date(time * 1000);
+                return date.toLocaleString('th-TH', { 
+                    timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', year: 'numeric',
+                    hour: '2-digit', minute: '2-digit', hour12: false 
+                });
+             };
+             
+             chart = createChart(container, {
+                layout: { background: { type: ColorType.Solid, color: '#18181b' }, textColor: '#a1a1aa' },
+                grid: { vertLines: { color: '#27272a' }, horzLines: { color: '#27272a' } },
+                localization: { locale: 'th-TH', dateFormat: 'dd MMM yyyy', timeFormatter: customTimeFormatter },
+                timeScale: { 
+                    borderColor: '#3f3f46', 
+                    timeVisible: true, 
+                    visible: true, 
+                    secondsVisible: false, 
+                    rightOffset: 50, 
+                    barSpacing: 10,
+                    tickMarkFormatter: (time: number, tickMarkType: TickMarkType, locale: string) => {
+                        const date = new Date(time * 1000);
+                        const options: Intl.DateTimeFormatOptions = { timeZone: 'Asia/Bangkok' };
+                        if (tickMarkType === 0) return date.toLocaleDateString('th-TH', { ...options, year: 'numeric' });
+                        if (tickMarkType === 1) return date.toLocaleDateString('th-TH', { ...options, month: 'short' });
+                        if (tickMarkType === 2) return date.toLocaleDateString('th-TH', { ...options, day: 'numeric', month: 'short' });
+                        return date.toLocaleTimeString('th-TH', { ...options, hour: '2-digit', minute: '2-digit', hour12: false });
+                    }
+                },
+                rightPriceScale: { borderColor: '#3f3f46', autoScale: true },
+                crosshair: { mode: 1 },
+                width: container.clientWidth, height: container.clientHeight
+             });
+             indicatorChartRefs.current.set(type, chart);
+
+             const main = chartRef.current;
+             if (main) {
+                 const syncToMain = (range: LogicalRange | null) => { if (range && chart) chart.timeScale().setVisibleLogicalRange(range); };
+                 const syncFromMain = (range: LogicalRange | null) => { if (range && main) main.timeScale().setVisibleLogicalRange(range); };
+                 main.timeScale().subscribeVisibleLogicalRangeChange(syncToMain);
+                 chart.timeScale().subscribeVisibleLogicalRangeChange(syncFromMain);
+                 
+                 const range = main.timeScale().getVisibleLogicalRange();
+                 if (range) chart.timeScale().setVisibleLogicalRange(range);
+             }
+
+             chart.subscribeCrosshairMove((param) => {
+                 if (!param.time) {
+                     setIndicatorValues(prev => ({ ...prev, [type]: null }));
+                     return;
+                 }
+                 
+                 const values: any = {};
+                 param.seriesData.forEach((val: any, series) => {
+                     const v = (typeof val === 'object' && val !== null && 'value' in val) ? val.value : val;
+
+                     if (type === 'RSI' && series === rsiSeriesRef.current) {
+                         values.rsi = v;
+                     }
+                     if (type === 'MACD') {
+                         if (series === macdSeriesRef.current) values.macd = v;
+                         if (series === macdSignalSeriesRef.current) values.signal = v;
+                         if (series === macdHistogramSeriesRef.current) values.hist = v;
+                     }
+                 });
+                 setIndicatorValues(prev => ({ ...prev, [type]: values }));
+             });
+         }
+     });
+  }, [indicatorConfigs]);
+
+  useEffect(() => {
+      activeIndicators.forEach(config => {
+          const chart = indicatorChartRefs.current.get(config.type);
+          if (!chart) return;
+
+          if (config.type === 'RSI') {
+              if (rsiData) {
+                  if (!rsiSeriesRef.current) {
+                      rsiSeriesRef.current = chart.addLineSeries({ 
+                          color: config.color || '#7e57c2', 
+                          lineWidth: 1, 
+                          title: 'RSI',
+                          priceLineVisible: false,
+                          lastValueVisible: true,
+                      });
+                      
+                      rsiSeriesRef.current.applyOptions({
+                          autoscaleInfoProvider: (original) => {
+                              const res = original();
+                              if (res !== null) {
+                                  const min = Math.min(res.priceRange.minValue, 20); 
+                                  const max = Math.max(res.priceRange.maxValue, 80); 
+                                  return { priceRange: { minValue: min, maxValue: max } };
+                              }
+                              return null;
+                          },
+                      });
+                  }
+                  rsiSeriesRef.current.applyOptions({ color: config.color || '#7e57c2' });
+                  rsiSeriesRef.current.setData(rsiData as any);
+              }
           }
-      }
-      oscChartRef.current = chart;
-      
-      const resizeObserver = new ResizeObserver(entries => {
-        if (entries.length === 0 || !entries[0].contentRect) return;
-        const { width, height } = entries[0].contentRect;
-        chart.applyOptions({ width, height });
+
+          if (config.type === 'MACD') {
+              if (macdData) {
+                  if (!macdHistogramSeriesRef.current) {
+                      macdHistogramSeriesRef.current = chart.addHistogramSeries({ 
+                          priceFormat: { type: 'volume' },
+                          priceLineVisible: false,
+                          lastValueVisible: true 
+                      });
+                  }
+                  
+                  const coloredHist = macdData.histogram.map(h => ({
+                      time: h.time,
+                      value: h.value,
+                      color: h.value >= 0 ? '#26a69a' : '#ef5350'
+                  }));
+                  macdHistogramSeriesRef.current.setData(coloredHist as any);
+
+                  if (!macdSeriesRef.current) {
+                      macdSeriesRef.current = chart.addLineSeries({ 
+                          color: config.color || '#2962ff', 
+                          lineWidth: 1, 
+                          title: 'MACD',
+                          priceLineVisible: false,
+                          lastValueVisible: true
+                      });
+                  }
+                  macdSeriesRef.current.applyOptions({ color: config.color || '#2962ff' });
+                  macdSeriesRef.current.setData(macdData.macd as any);
+
+                  if (!macdSignalSeriesRef.current) {
+                      macdSignalSeriesRef.current = chart.addLineSeries({ 
+                          color: config.signalColor || '#f57c00', 
+                          lineWidth: 1, 
+                          title: 'Signal',
+                          priceLineVisible: false,
+                          lastValueVisible: true
+                      });
+                  }
+                  macdSignalSeriesRef.current.applyOptions({ color: config.signalColor || '#f57c00' });
+                  macdSignalSeriesRef.current.setData(macdData.signal as any);
+              }
+          }
       });
-      resizeObserver.observe(oscContainerRef.current);
+  }, [indicatorConfigs, rsiData, macdData]);
 
-      const main = chartRef.current;
-      if (main) {
-          const syncMainToOsc = (range: LogicalRange | null) => { if (range && oscChartRef.current) oscChartRef.current.timeScale().setVisibleLogicalRange(range); };
-          const syncOscToMain = (range: LogicalRange | null) => { if (range && chartRef.current) chartRef.current.timeScale().setVisibleLogicalRange(range); };
-          main.timeScale().subscribeVisibleLogicalRangeChange(syncMainToOsc);
-          chart.timeScale().subscribeVisibleLogicalRangeChange(syncOscToMain);
-          const range = main.timeScale().getVisibleLogicalRange();
-          if (range) chart.timeScale().setVisibleLogicalRange(range);
-          return () => { 
-             resizeObserver.disconnect();
-             try { main.timeScale().unsubscribeVisibleLogicalRangeChange(syncMainToOsc); } catch(e) {}
-             chart.remove(); oscChartRef.current = null; 
-          };
+  useEffect(() => {
+      const rsiConfig = indicatorConfigs.find(c => c.type === 'RSI');
+      if (rsiConfig && rsiSeriesRef.current) {
+          if (rsiUpperLineRef.current) {
+              rsiSeriesRef.current.removePriceLine(rsiUpperLineRef.current);
+              rsiUpperLineRef.current = null;
+          }
+          if (rsiLowerLineRef.current) {
+              rsiSeriesRef.current.removePriceLine(rsiLowerLineRef.current);
+              rsiLowerLineRef.current = null;
+          }
+
+          rsiUpperLineRef.current = rsiSeriesRef.current.createPriceLine({ 
+              price: rsiConfig.upperLevel || 70, 
+              color: '#ef4444', 
+              lineWidth: 1, 
+              lineStyle: 2, 
+              axisLabelVisible: true, 
+              title: '' 
+          });
+          
+          rsiLowerLineRef.current = rsiSeriesRef.current.createPriceLine({ 
+              price: rsiConfig.lowerLevel || 30, 
+              color: '#22c55e', 
+              lineWidth: 1, 
+              lineStyle: 2, 
+              axisLabelVisible: true, 
+              title: '' 
+          });
       }
-      return () => { resizeObserver.disconnect(); chart.remove(); oscChartRef.current = null; };
-  }, [indicators]);
+  }, [indicatorConfigs]); 
 
-  // --- DRAWING RENDERER (SVG) ---
+  useEffect(() => {
+      const ro = new ResizeObserver(entries => {
+          if (entries.length === 0) return;
+          if (entries[0].target === chartContainerRef.current) {
+              chartRef.current?.applyOptions({ width: entries[0].contentRect.width, height: entries[0].contentRect.height });
+          }
+          indicatorContainerRefs.current.forEach((div, type) => {
+              const chart = indicatorChartRefs.current.get(type);
+              if (chart && div) {
+                  chart.applyOptions({ width: div.clientWidth, height: div.clientHeight });
+              }
+          });
+      });
+
+      if (chartContainerRef.current) ro.observe(chartContainerRef.current);
+      return () => ro.disconnect();
+  }, [indicatorConfigs, indicatorHeights]);
+
   const updateDrawings = () => {
       if (!chartRef.current || !candleSeriesRef.current || !chartContainerRef.current) return;
       const newPaths: React.ReactNode[] = [];
       const timeScale = chartRef.current.timeScale();
       
-      const getCoord = (time: number) => {
-         if (time === null || time === undefined) return -1000;
-         const c = timeScale.timeToCoordinate(time as any);
-         if (c !== null) return c;
-         
+      const getCoord = (time: number): number | null => {
+         const ts = chartRef.current?.timeScale();
+         if (!ts) return null;
+         const c = ts.timeToCoordinate(time as any);
+         if (c !== null && c !== undefined) return c;
+
          const currentData = dataRef.current;
-         if (currentData.length > 0) {
-             const lastIndex = currentData.length - 1;
-             const lastTime = currentData[lastIndex].time;
-             const candleInterval = intervalRef.current || 60; // Use prop interval
-             const timeDiff = time - lastTime;
-             const indexDiff = timeDiff / candleInterval;
-             const logical = lastIndex + indexDiff;
-             const coord = timeScale.logicalToCoordinate(logical);
-             if (coord !== null) return coord;
+         if (!currentData || currentData.length === 0) return null;
+
+         let low = 0;
+         let high = currentData.length - 1;
+         let leftIdx = -1;
+
+         while (low <= high) {
+             const mid = (low + high) >>> 1;
+             if (currentData[mid].time === time) {
+                 leftIdx = mid;
+                 break;
+             } else if (currentData[mid].time < time) {
+                 leftIdx = mid;
+                 low = mid + 1;
+             } else {
+                 high = mid - 1;
+             }
          }
-         return -1000; 
+
+         if (leftIdx !== -1 && currentData[leftIdx].time === time) {
+             return ts.logicalToCoordinate(leftIdx);
+         }
+
+         const candleInterval = intervalRef.current || 60;
+
+         if (leftIdx === -1) {
+             const first = currentData[0];
+             const diff = time - first.time; 
+             const offset = diff / candleInterval;
+             return ts.logicalToCoordinate(offset);
+         }
+
+         if (leftIdx === currentData.length - 1) {
+             const last = currentData[leftIdx];
+             const diff = time - last.time;
+             const offset = diff / candleInterval;
+             return ts.logicalToCoordinate(leftIdx + offset);
+         }
+
+         const leftCandle = currentData[leftIdx];
+         const rightCandle = currentData[leftIdx + 1];
+         
+         const range = rightCandle.time - leftCandle.time;
+         const diff = time - leftCandle.time;
+         
+         const ratio = diff / range;
+         const logical = leftIdx + ratio;
+         
+         return ts.logicalToCoordinate(logical);
       }
-      
+
       const safePriceCoord = (price: number) => { 
-          if (price === null || price === undefined || isNaN(price)) return -10000;
-          try {
-              const coord = candleSeriesRef.current!.priceToCoordinate(price); 
-              return coord === null ? -10000 : coord; 
-          } catch(e) { return -10000; }
+          if (price === null || isNaN(price)) return -10000;
+          try { const coord = candleSeriesRef.current!.priceToCoordinate(price); return coord === null ? -10000 : coord; } catch(e) { return -10000; }
       };
       
       const width = chartContainerRef.current.clientWidth;
-
-      // --- TRADE LINES (INTERACTIVE SL/TP) ---
       trades.forEach(t => {
           if (t.status === OrderStatus.CLOSED) return;
-
           const isDraggingThis = dragTrade && dragTrade.id === t.id;
-          
-          // SL LINE
+
+          if (t.status === OrderStatus.PENDING) {
+              const price = (isDraggingThis && dragTrade.type === 'ENTRY') ? dragTrade.currentPrice : t.entryPrice;
+              const y = safePriceCoord(price);
+              if (y > 0 && y < chartContainerRef.current!.clientHeight) {
+                  const color = '#f59e0b';
+                  const label = t.type === 'LIMIT' ? 'LIMIT' : 'STOP';
+                  newPaths.push(
+                      <g key={`entry-${t.id}`} className="cursor-ns-resize group" style={{pointerEvents: 'auto'}}>
+                          <line x1={0} y1={y} x2={width} y2={y} stroke="transparent" strokeWidth={20} style={{pointerEvents: 'stroke', cursor: 'ns-resize'}} 
+                                onMouseDown={(e) => { e.stopPropagation(); setDragTrade({ id: t.id, type: 'ENTRY', startPrice: t.entryPrice, currentPrice: t.entryPrice }); }} 
+                                onDoubleClick={(e) => {
+                                    e.stopPropagation();
+                                    const newPrice = window.prompt("Enter new price:", t.entryPrice.toString());
+                                    if (newPrice && !isNaN(parseFloat(newPrice)) && onModifyOrderEntry) {
+                                        onModifyOrderEntry(t.id, parseFloat(newPrice));
+                                    }
+                                }}
+                          />
+                          <line x1={0} y1={y} x2={width} y2={y} stroke={color} strokeDasharray="4 2" strokeWidth={1} style={{pointerEvents: 'none'}} />
+                          <g transform={`translate(${width - 85}, ${y - 10})`} style={{pointerEvents: 'none'}}>
+                               <rect width="75" height="20" rx="2" fill={color} />
+                               <text x="37.5" y="14" textAnchor="middle" fill="black" fontSize="10" fontWeight="bold">{label} #{t.id.substr(0,4)}</text>
+                          </g>
+                      </g>
+                  );
+              }
+          }
+
+          if (t.status === OrderStatus.OPEN) {
+               const entryY = safePriceCoord(t.entryPrice);
+               if (entryY > 0 && entryY < chartContainerRef.current!.clientHeight) {
+                   if (t.stopLoss === 0 && (!isDraggingThis || dragTrade.type !== 'SL')) {
+                        newPaths.push(
+                            <g key={`sl-add-${t.id}`} className="cursor-pointer select-none" style={{pointerEvents: 'auto'}} transform={`translate(${width - 115}, ${entryY - 10})`} 
+                               onMouseDown={(e) => { 
+                                   e.stopPropagation(); 
+                                   e.preventDefault();
+                                   setDragTrade({ id: t.id, type: 'SL', startPrice: t.entryPrice, currentPrice: t.entryPrice }); 
+                               }}
+                            >
+                                <rect width="28" height="18" rx="4" fill="#18181b" stroke="#F23645" strokeWidth={1} />
+                                <text x="14" y="12" textAnchor="middle" fill="#F23645" fontSize="9" fontWeight="bold">SL+</text>
+                            </g>
+                        );
+                   }
+                   if (t.takeProfit === 0 && (!isDraggingThis || dragTrade.type !== 'TP')) {
+                        newPaths.push(
+                            <g key={`tp-add-${t.id}`} className="cursor-pointer select-none" style={{pointerEvents: 'auto'}} transform={`translate(${width - 83}, ${entryY - 10})`} 
+                               onMouseDown={(e) => { 
+                                   e.stopPropagation(); 
+                                   e.preventDefault();
+                                   setDragTrade({ id: t.id, type: 'TP', startPrice: t.entryPrice, currentPrice: t.entryPrice }); 
+                               }}
+                            >
+                                <rect width="28" height="18" rx="4" fill="#18181b" stroke="#089981" strokeWidth={1} />
+                                <text x="14" y="12" textAnchor="middle" fill="#089981" fontSize="9" fontWeight="bold">TP+</text>
+                            </g>
+                        );
+                   }
+               }
+          }
+
           if (t.stopLoss > 0 || (isDraggingThis && dragTrade.type === 'SL')) {
               const price = (isDraggingThis && dragTrade.type === 'SL') ? dragTrade.currentPrice : t.stopLoss;
               const y = safePriceCoord(price);
               if (y > 0 && y < chartContainerRef.current!.clientHeight) {
-                  const color = '#F23645';
-                  newPaths.push(
-                    <g key={`sl-${t.id}`} className="cursor-ns-resize group" style={{pointerEvents: 'auto'}}>
-                        <line x1={0} y1={y} x2={width} y2={y} stroke="transparent" strokeWidth={20} style={{pointerEvents: 'stroke', cursor: 'ns-resize'}} onMouseDown={(e) => { e.stopPropagation(); setDragTrade({ id: t.id, type: 'SL', startPrice: t.stopLoss, currentPrice: t.stopLoss }); }} />
-                        <line x1={0} y1={y} x2={width} y2={y} stroke={color} strokeDasharray="4 4" strokeWidth={1} style={{pointerEvents: 'none'}} />
-                        <g transform={`translate(${width - 65}, ${y - 10})`} style={{pointerEvents: 'none'}}>
-                            <rect width="55" height="20" rx="2" fill={color} />
-                            <text x="27.5" y="14" textAnchor="middle" fill="white" fontSize="12" fontWeight="bold">SL</text>
-                        </g>
-                    </g>
-                  );
+                  newPaths.push(<g key={`sl-${t.id}`} className="cursor-ns-resize group" style={{pointerEvents: 'auto'}}><line x1={0} y1={y} x2={width} y2={y} stroke="transparent" strokeWidth={20} style={{pointerEvents: 'stroke', cursor: 'ns-resize'}} onMouseDown={(e) => { e.stopPropagation(); setDragTrade({ id: t.id, type: 'SL', startPrice: t.stopLoss, currentPrice: t.stopLoss }); }} /><line x1={0} y1={y} x2={width} y2={y} stroke="#F23645" strokeDasharray="4 4" strokeWidth={1} style={{pointerEvents: 'none'}} /><g transform={`translate(${width - 65}, ${y - 10})`} style={{pointerEvents: 'none'}}><rect width="55" height="20" rx="2" fill="#F23645" /><text x="27.5" y="14" textAnchor="middle" fill="white" fontSize="12" fontWeight="bold">SL</text></g></g>);
               }
           }
-
-          // TP LINE
           if (t.takeProfit > 0 || (isDraggingThis && dragTrade.type === 'TP')) {
               const price = (isDraggingThis && dragTrade.type === 'TP') ? dragTrade.currentPrice : t.takeProfit;
               const y = safePriceCoord(price);
               if (y > 0 && y < chartContainerRef.current!.clientHeight) {
-                  const color = '#089981';
+                  newPaths.push(<g key={`tp-${t.id}`} className="cursor-ns-resize group" style={{pointerEvents: 'auto'}}><line x1={0} y1={y} x2={width} y2={y} stroke="transparent" strokeWidth={20} style={{pointerEvents: 'stroke', cursor: 'ns-resize'}} onMouseDown={(e) => { e.stopPropagation(); setDragTrade({ id: t.id, type: 'TP', startPrice: t.takeProfit, currentPrice: t.takeProfit }); }} /><line x1={0} y1={y} x2={width} y2={y} stroke="#089981" strokeDasharray="4 4" strokeWidth={1} style={{pointerEvents: 'none'}} /><g transform={`translate(${width - 65}, ${y - 10})`} style={{pointerEvents: 'none'}}><rect width="55" height="20" rx="2" fill="#089981" /><text x="27.5" y="14" textAnchor="middle" fill="white" fontSize="12" fontWeight="bold">TP</text></g></g>);
+              }
+          }
+      });
+
+      let renderList = [...drawings];
+      if (activeDragObject) {
+         const idx = renderList.findIndex(d => d.id === activeDragObject.id);
+         if (idx >= 0) renderList[idx] = activeDragObject; 
+         else renderList.push(activeDragObject);
+      }
+      
+      if (tempPoint && hoverPoint && activeToolRef.current !== 'CURSOR' && activeToolRef.current !== 'KILLZONE' && activeToolRef.current !== 'TEXT') {
+          const ghostId = 'ghost-preview';
+          let ghostDrawing: DrawingObject = {
+              id: ghostId,
+              symbol: activeSymbolRef.current,
+              type: activeToolRef.current,
+              p1: tempPoint,
+              p2: hoverPoint,
+              visible: true,
+              locked: false,
+              color: drawingSettingsRef.current.color,
+              lineWidth: drawingSettingsRef.current.lineWidth,
+              lineStyle: drawingSettingsRef.current.lineStyle
+          };
+
+          if (activeToolRef.current === 'RECTANGLE') {
+              ghostDrawing.text = 'Kill Zone';
+          }
+
+          // Calculate Dynamic Targets for Ghost Position Tools to show animation while dragging
+          if (activeToolRef.current === 'LONG_POSITION' || activeToolRef.current === 'SHORT_POSITION') {
+                const isLong = activeToolRef.current === 'LONG_POSITION';
+                const entryP = tempPoint.price;
+                const currentP = hoverPoint.price;
+                const dist = Math.abs(currentP - entryP);
+                const minDiff = entryP * 0.0005; // Minimum visual size
+                
+                let targetPrice, stopPrice;
+                if (dist < minDiff) {
+                    const risk = entryP * 0.002;
+                    stopPrice = isLong ? entryP - risk : entryP + risk;
+                    targetPrice = isLong ? entryP + (risk * 2) : entryP - (risk * 2);
+                } else {
+                    if (isLong) {
+                        if (currentP > entryP) {
+                            targetPrice = currentP;
+                            stopPrice = entryP - (dist * 0.5);
+                        } else {
+                            stopPrice = currentP;
+                            targetPrice = entryP + (dist * 2);
+                        }
+                    } else { 
+                        if (currentP < entryP) {
+                            targetPrice = currentP;
+                            stopPrice = entryP + (dist * 0.5);
+                        } else {
+                            stopPrice = currentP;
+                            targetPrice = entryP - (dist * 2);
+                        }
+                    }
+                }
+                ghostDrawing.targetPrice = targetPrice;
+                ghostDrawing.stopPrice = stopPrice;
+          }
+
+          renderList = [...renderList, ghostDrawing];
+      }
+
+      renderList.forEach(d => {
+          if (!d.visible) return;
+          
+          const x1Val = getCoord(d.p1.time);
+          const x2Val = getCoord(d.p2.time);
+          
+          const x1 = x1Val ?? -10000;
+          const x2 = x2Val ?? -10000;
+          const y1 = safePriceCoord(d.p1.price);
+          const y2 = safePriceCoord(d.p2.price);
+          
+          const handleDblClick = (e: React.MouseEvent) => {
+              e.stopPropagation();
+              if (onDrawingEdit && d.id !== 'ghost-preview') onDrawingEdit(d);
+          };
+          
+          const pointerEventsStyle = d.id === 'ghost-preview' ? 'none' : 'auto';
+          const isSelected = d.id === selectedDrawingId;
+
+          if (d.type === 'TEXT') {
+              if (y1 > -5000 && x1Val !== null) {
+                  const lines = d.text ? d.text.split('\n') : ["Text"];
+                  const fontSize = d.fontSize || 14;
+                  const lineHeight = fontSize * 1.2;
+                  
                   newPaths.push(
-                    <g key={`tp-${t.id}`} className="cursor-ns-resize group" style={{pointerEvents: 'auto'}}>
-                        <line x1={0} y1={y} x2={width} y2={y} stroke="transparent" strokeWidth={20} style={{pointerEvents: 'stroke', cursor: 'ns-resize'}} onMouseDown={(e) => { e.stopPropagation(); setDragTrade({ id: t.id, type: 'TP', startPrice: t.takeProfit, currentPrice: t.takeProfit }); }} />
-                        <line x1={0} y1={y} x2={width} y2={y} stroke={color} strokeDasharray="4 4" strokeWidth={1} style={{pointerEvents: 'none'}} />
-                        <g transform={`translate(${width - 65}, ${y - 10})`} style={{pointerEvents: 'none'}}>
-                            <rect width="55" height="20" rx="2" fill={color} />
-                            <text x="27.5" y="14" textAnchor="middle" fill="white" fontSize="12" fontWeight="bold">TP</text>
-                        </g>
-                    </g>
+                      <g key={d.id} onDoubleClick={handleDblClick} style={{pointerEvents: pointerEventsStyle}}>
+                          <text 
+                              x={x1} y={y1} 
+                              fill={d.color} 
+                              fontSize={fontSize} 
+                              fontWeight="bold"
+                              className="cursor-move select-none"
+                              onMouseDown={(e) => startDrag(e, d, 'p1')}
+                              style={{ textShadow: '0px 1px 2px rgba(0,0,0,0.8)', whiteSpace: 'pre' }}
+                          >
+                              {lines.map((line, i) => (
+                                  <tspan key={i} x={x1} dy={i === 0 ? 0 : lineHeight}>
+                                      {line}
+                                  </tspan>
+                              ))}
+                          </text>
+                          {isSelected && (
+                              <rect 
+                                x={x1 - 2} y={y1 - fontSize} width={20} height={20} 
+                                fill="transparent" stroke="blue" strokeWidth={1} strokeDasharray="2 2"
+                                style={{pointerEvents: 'none'}}
+                              />
+                          )}
+                      </g>
                   );
               }
-          }
-      });
+          } else if (d.type === 'KILLZONE' && d.killZoneConfig) {
+              if (intervalRef.current >= 14400) return;
 
-      // --- DRAWINGS ---
-      const displayDrawings = drawings.map(d => (activeDragObject && d.id === activeDragObject.id) ? activeDragObject : d);
-      displayDrawings.forEach(d => {
-          if (!d.visible) return;
-          const x1 = getCoord(d.p1.time), x2 = getCoord(d.p2.time), y1 = safePriceCoord(d.p1.price), y2 = safePriceCoord(d.p2.price);
-          const isSelected = d.id === selectedDrawingId;
-           const handleObjectMouseDown = (point: DragState['point']) => (e: React.MouseEvent) => {
-              if (d.locked) return; e.stopPropagation(); e.preventDefault();
-              const rect = chartContainerRef.current!.getBoundingClientRect();
-              const logical = chartRef.current!.timeScale().coordinateToLogical(e.clientX - rect.left);
-              const time = logical !== null ? getTimeFromLogical(logical) : null;
-              try {
-                  const price = candleSeriesRef.current!.coordinateToPrice(e.clientY - rect.top);
-                  if (time && price !== null) { 
-                      setDragTarget({ id: d.id, point, initialP1: { ...d.p1 }, initialP2: { ...d.p2 }, initialTarget: d.targetPrice, initialStop: d.stopPrice, initialMouse: { time, price } }); 
-                      setActiveDragObject(d); 
-                      if (onDrawingSelect) onDrawingSelect(d.id); 
-                  }
-              } catch(e) {}
-          };
-          const commonProps = { 
-              onClick: (e: React.MouseEvent) => { e.stopPropagation(); if (onDrawingSelect) onDrawingSelect(d.id); }, 
-              onDoubleClick: (e: React.MouseEvent) => { e.stopPropagation(); if (onDrawingEdit) onDrawingEdit(d); }, 
-              style: { pointerEvents: 'auto' as const, cursor: d.locked ? 'default' : 'pointer' } 
-          };
-          
-          if (d.type === 'TRENDLINE') {
-              newPaths.push(<line key={d.id+'hit'} x1={x1} y1={y1} x2={x2} y2={y2} stroke="transparent" strokeWidth={10} onMouseDown={handleObjectMouseDown('all')} {...commonProps} />);
-              newPaths.push(<line key={d.id} x1={x1} y1={y1} x2={x2} y2={y2} stroke={isSelected ? 'white' : d.color} strokeWidth={d.lineWidth} strokeDasharray={d.lineStyle === 'dashed' ? '8 4' : d.lineStyle === 'dotted' ? '2 2' : ''} style={{pointerEvents: 'none'}} />);
-          } else if (d.type === 'FIB') {
-               const diff = d.p2.price - d.p1.price, minX = Math.min(x1, x2), maxX = Math.max(x1, x2);
-              newPaths.push(<line key={d.id+'main-hit'} x1={x1} y1={y1} x2={x2} y2={y2} stroke="transparent" strokeWidth={10} onMouseDown={handleObjectMouseDown('all')} {...commonProps} />);
-              newPaths.push(<line key={d.id+'main'} x1={x1} y1={y1} x2={x2} y2={y2} stroke={d.color} strokeWidth={1} strokeDasharray="4 4" opacity={0.5} style={{pointerEvents: 'none'}} />);
-              (d.fibLevels || []).filter(l => l.visible).forEach((l, idx) => {
-                  const y = safePriceCoord(d.p1.price + (diff * l.level));
-                  newPaths.push(<line key={d.id+idx+'hit'} x1={minX} y1={y} x2={maxX} y2={y} stroke="transparent" strokeWidth={10} onMouseDown={handleObjectMouseDown('all')} {...commonProps} />);
-                  newPaths.push(<g key={d.id+idx} style={{pointerEvents:'none'}}><line x1={minX} y1={y} x2={maxX} y2={y} stroke={l.color} strokeWidth={1} opacity={0.8}/><text x={minX} y={y-2} fill={l.color} fontSize="11" fontWeight="bold">{l.level}</text></g>);
+              const logicalRange = timeScale.getVisibleLogicalRange();
+              if (!logicalRange) return;
+              const startIdx = Math.max(0, Math.floor(logicalRange.from));
+              const endIdx = Math.min(dataRef.current.length - 1, Math.ceil(logicalRange.to));
+              const uniqueDates = new Set<string>();
+              
+              const getBangkokDateStr = (ts: number) => {
+                  const date = new Date((ts + BANGKOK_OFFSET) * 1000);
+                  const year = date.getUTCFullYear();
+                  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+                  const day = String(date.getUTCDate()).padStart(2, '0');
+                  return `${year}-${month}-${day}`;
+              }
+
+              for (let i = startIdx; i <= endIdx; i++) {
+                  const c = dataRef.current[i];
+                  if (c) uniqueDates.add(getBangkokDateStr(c.time));
+              }
+              
+              uniqueDates.forEach(dateStr => {
+                  const sessions = [
+                      { key: 'asian', ...d.killZoneConfig!.asian },
+                      { key: 'london', ...d.killZoneConfig!.london },
+                      { key: 'ny', ...d.killZoneConfig!.ny },
+                  ] as const;
+                  const boxOpacity = d.killZoneConfig!.opacity !== undefined ? d.killZoneConfig!.opacity : 0.15;
+                  sessions.forEach(sess => {
+                      if (!sess.enabled) return;
+                      let startTs = getSessionTimestamp(dateStr, sess.start);
+                      let endTs = getSessionTimestamp(dateStr, sess.end);
+                      if (endTs <= startTs) endTs += 86400; 
+                      
+                      const relevantData = dataRef.current.filter(c => c.time >= startTs && c.time <= endTs);
+                      let maxH = -Infinity;
+                      let minL = Infinity;
+                      
+                      if (relevantData.length > 0) {
+                          relevantData.forEach(c => {
+                              if (c.high > maxH) maxH = c.high;
+                              if (c.low < minL) minL = c.low;
+                          });
+                      } else { 
+                          const encompassing = dataRef.current.find(c => c.time <= startTs && (c.time + (intervalRef.current || 60)) >= endTs);
+                          if (encompassing) {
+                              maxH = encompassing.high;
+                              minL = encompassing.low;
+                          } else {
+                              return; 
+                          }
+                      }
+                      
+                      const sxVal = getCoord(startTs);
+                      const exVal = getCoord(endTs);
+                      if (sxVal === null || exVal === null) return;
+                      const sx = sxVal;
+                      const ex = exVal;
+                      const sy = safePriceCoord(maxH);
+                      const ey = safePriceCoord(minL);
+                      
+                      if (sy > -5000 && ey > -5000) {
+                          const boxWidth = Math.max(1, ex - sx);
+                          const boxHeight = Math.abs(ey - sy);
+                          newPaths.push(
+                              <g key={`${d.id}-${dateStr}-${sess.key}`} onDoubleClick={handleDblClick} style={{pointerEvents: pointerEventsStyle}}>
+                                  <rect x={sx} y={sy} width={boxWidth} height={boxHeight} fill={sess.color} fillOpacity={boxOpacity} stroke="none" />
+                                  {d.killZoneConfig!.showLabel && (<text x={sx} y={sy - 5} fill={sess.color} fontSize={10} fontWeight="bold">{sess.label}</text>)}
+                                  {d.killZoneConfig!.showHighLowLines && (<><line x1={sx} y1={sy} x2={ex} y2={sy} stroke={sess.color} strokeWidth={1} /><line x1={sx} y1={ey} x2={ex} y2={ey} stroke={sess.color} strokeWidth={1} /></>)}
+                                  {d.killZoneConfig!.extend && (<><line x1={ex} y1={sy} x2={width} y2={sy} stroke={sess.color} strokeWidth={1} strokeDasharray="4 2" opacity={0.7} /><line x1={ex} y1={ey} x2={width} y2={ey} stroke={sess.color} strokeWidth={1} strokeDasharray="4 2" opacity={0.7} /></>)}
+                                  {d.killZoneConfig!.showAverage && (<line x1={sx} y1={(sy+ey)/2} x2={d.killZoneConfig!.extend ? width : ex} y2={(sy+ey)/2} stroke={sess.color} strokeWidth={1} strokeDasharray="2 2" opacity={0.7} />)}
+                              </g>
+                          );
+                      }
+                  });
               });
-          } else if (d.type === 'LONG_POSITION' || d.type === 'SHORT_POSITION') {
-              const isLong = d.type === 'LONG_POSITION';
-              const targetPrice = d.targetPrice || d.p1.price;
-              const stopPrice = d.stopPrice || d.p1.price;
-              const targetY = safePriceCoord(targetPrice);
-              const stopY = safePriceCoord(stopPrice);
-              const minX = Math.min(x1, x2), maxX = Math.max(x1, x2), rW = Math.max(2, maxX - minX);
-              const tpColor = '#089981';
-              const slColor = '#F23645';
-              const entryP = d.p1.price;
-              const risk = Math.abs(entryP - stopPrice);
-              const reward = Math.abs(targetPrice - entryP);
-              const rr = risk === 0 ? 0 : reward / risk;
-
-              newPaths.push(<rect key={d.id+'tp'} x={minX} y={Math.min(y1, targetY)} width={rW} height={Math.abs(y1 - targetY)} fill={tpColor + '20'} stroke={tpColor} strokeWidth={1} onMouseDown={handleObjectMouseDown('all')} {...commonProps} />);
-              newPaths.push(<rect key={d.id+'sl'} x={minX} y={Math.min(y1, stopY)} width={rW} height={Math.abs(y1 - stopY)} fill={slColor + '20'} stroke={slColor} strokeWidth={1} onMouseDown={handleObjectMouseDown('all')} {...commonProps} />);
-              const labelX = maxX + 4;
-              const precision = pricePrecision || 5;
-              newPaths.push(
-                  <g key={d.id+'lbl-en'} style={{pointerEvents: 'none'}}>
-                      <rect x={labelX} y={y1 - 10} width="70" height="20" rx="3" fill="#3f3f46" />
-                      <text x={labelX + 6} y={y1 + 5} fill="white" fontSize="12" fontFamily="monospace" fontWeight="bold">{entryP.toFixed(precision)}</text>
-                  </g>
-              );
-              newPaths.push(
-                  <g key={d.id+'lbl-tp'} style={{pointerEvents: 'none'}}>
-                       <rect x={labelX} y={targetY - 10} width="110" height="20" rx="3" fill={tpColor} />
-                       <text x={labelX + 6} y={targetY + 5} fill="white" fontSize="12" fontFamily="monospace" fontWeight="bold">TP: {targetPrice.toFixed(precision)}</text>
-                  </g>
-              );
-              newPaths.push(
-                  <g key={d.id+'lbl-sl'} style={{pointerEvents: 'none'}}>
-                       <rect x={labelX} y={stopY - 10} width="110" height="20" rx="3" fill={slColor} />
-                       <text x={labelX + 6} y={stopY + 5} fill="white" fontSize="12" fontFamily="monospace" fontWeight="bold">SL: {stopPrice.toFixed(precision)}</text>
-                  </g>
-              );
-              newPaths.push(
-                  <g key={d.id+'lbl-rr'} style={{pointerEvents: 'none'}}>
-                      <text x={minX + rW/2} y={y1 - (y1-targetY)/2} fill={tpColor} fontSize="12" fontWeight="black" textAnchor="middle" opacity={0.8}>Reward</text>
-                      <text x={minX + rW/2} y={y1 - (y1-stopY)/2} fill={slColor} fontSize="12" fontWeight="black" textAnchor="middle" opacity={0.8}>Risk</text>
-                      <g transform={`translate(${minX + rW/2}, ${y1})`}>
-                          <rect x="-35" y="-11" width="70" height="22" rx="4" fill="#18181b" stroke="#3f3f46" strokeWidth="1" />
-                          <text x="0" y="5" fill="white" fontSize="12" fontWeight="bold" textAnchor="middle">R: {rr.toFixed(2)}</text>
-                      </g>
-                  </g>
-              );
-              if (isSelected && !d.locked) {
-                  newPaths.push(<circle key={d.id+'ht'} cx={minX+rW/2} cy={targetY} r={5} fill="white" stroke={tpColor} strokeWidth="2" onMouseDown={handleObjectMouseDown('target')} style={{cursor:'ns-resize', pointerEvents:'auto'}} />);
-                  newPaths.push(<circle key={d.id+'hs'} cx={minX+rW/2} cy={stopY} r={5} fill="white" stroke={slColor} strokeWidth="2" onMouseDown={handleObjectMouseDown('stop')} style={{cursor:'ns-resize', pointerEvents:'auto'}} />);
+          } else if (d.type === 'TRENDLINE') {
+              newPaths.push(<g key={d.id} onDoubleClick={handleDblClick} style={{pointerEvents: pointerEventsStyle}}><line x1={x1} y1={y1} x2={x2} y2={y2} stroke="transparent" strokeWidth={20} className="cursor-move" onMouseDown={(e) => startDrag(e, d, 'all')} /><line x1={x1} y1={y1} x2={x2} y2={y2} stroke={d.color} strokeWidth={d.lineWidth} strokeDasharray={d.lineStyle === 'dashed' ? '8 4' : d.lineStyle === 'dotted' ? '2 2' : ''} style={{pointerEvents: 'none'}} />{isSelected && (<><circle cx={x1} cy={y1} r={5} fill="white" stroke={d.color} strokeWidth={1} className="cursor-pointer" onMouseDown={(e) => startDrag(e, d, 'p1')} /><circle cx={x2} cy={y2} r={5} fill="white" stroke={d.color} strokeWidth={1} className="cursor-pointer" onMouseDown={(e) => startDrag(e, d, 'p2')} /></>)}</g>);
+          } else if (d.type === 'RECTANGLE') {
+              const xStart = Math.min(x1, x2);
+              const yStart = Math.min(y1, y2);
+              const width = Math.abs(x2 - x1);
+              const height = Math.abs(y2 - y1);
+              if (y1 > -5000 && y2 > -5000) {
+                  newPaths.push(<g key={d.id} onDoubleClick={handleDblClick} style={{pointerEvents: pointerEventsStyle}}><rect x={xStart} y={yStart} width={width} height={height} fill={d.color} fillOpacity={0.2} stroke={d.color} strokeWidth={d.lineWidth} strokeDasharray={d.lineStyle === 'dashed' ? '4 2' : d.lineStyle === 'dotted' ? '2 2' : ''} className="cursor-move" onMouseDown={(e) => startDrag(e, d, 'all')} />{d.text && (<text x={xStart + 5} y={yStart - 5} fill={d.color} fontSize={11} fontWeight="bold" style={{textShadow: '0px 1px 2px black'}}>{d.text}</text>)}{isSelected && d.id !== 'ghost-preview' && (<><circle cx={x1} cy={y1} r={5} fill="white" stroke={d.color} strokeWidth={1} className="cursor-pointer" onMouseDown={(e) => startDrag(e, d, 'p1')} /><circle cx={x2} cy={y2} r={5} fill="white" stroke={d.color} strokeWidth={1} className="cursor-pointer" onMouseDown={(e) => startDrag(e, d, 'p2')} /></>)}</g>);
               }
-          }
-          if (isSelected && !d.locked) {
-              newPaths.push(<circle key={d.id+'p1'} cx={x1} cy={y1} r={6} fill={d.color} stroke="white" onMouseDown={handleObjectMouseDown('p1')} style={{cursor:'move', pointerEvents:'auto'}} />);
-              const p2Cy = (d.type === 'LONG_POSITION' || d.type === 'SHORT_POSITION') ? y1 : y2;
-              newPaths.push(<circle key={d.id+'p2'} cx={x2} cy={p2Cy} r={6} fill={d.color} stroke="white" onMouseDown={handleObjectMouseDown('p2')} style={{cursor:'move', pointerEvents:'auto'}} />);
+          } else if (d.type === 'FIB') {
+              if (y1 > -5000 && y2 > -5000) {
+                  newPaths.push(<line key={`${d.id}-hit`} x1={x1} y1={y1} x2={x2} y2={y2} stroke="transparent" strokeWidth={15} style={{pointerEvents: pointerEventsStyle, cursor: 'move'}} onMouseDown={(e) => d.id !== 'ghost-preview' && startDrag(e, d, 'all')} onDoubleClick={handleDblClick} />);
+                  newPaths.push(<line key={`${d.id}-main`} x1={x1} y1={y1} x2={x2} y2={y2} stroke={d.color} strokeWidth={1} strokeDasharray="4 4" opacity={0.5} style={{pointerEvents: 'none'}} />);
+                  if (isSelected && d.id !== 'ghost-preview') {
+                      newPaths.push(<circle key={`${d.id}-p1`} cx={x1} cy={y1} r={5} fill="white" stroke={d.color} strokeWidth={1} className="cursor-pointer" onMouseDown={(e) => startDrag(e, d, 'p1')} style={{pointerEvents: 'auto'}} />);
+                      newPaths.push(<circle key={`${d.id}-p2`} cx={x2} cy={y2} r={5} fill="white" stroke={d.color} strokeWidth={1} className="cursor-pointer" onMouseDown={(e) => startDrag(e, d, 'p2')} style={{pointerEvents: 'auto'}} />);
+                  }
+                  const range = d.p1.price - d.p2.price;
+                  d.fibLevels?.forEach(fib => {
+                      if (!fib.visible) return;
+                      const levelPrice = d.p2.price + (range * fib.level);
+                      const ly = safePriceCoord(levelPrice);
+                      if (ly > -5000) {
+                          newPaths.push(<g key={`${d.id}-${fib.level}`} onDoubleClick={handleDblClick} style={{pointerEvents: pointerEventsStyle}}><line x1={Math.min(x1, x2)} y1={ly} x2={Math.max(x1, x2)} y2={ly} stroke={fib.color} strokeWidth={1} strokeDasharray="4 4" opacity={0.8} /><text x={Math.max(x1,x2) + 5} y={ly + 3} fill={fib.color} fontSize={10} textAnchor="start">{fib.level} ({levelPrice.toFixed(pricePrecision)})</text></g>);
+                      }
+                  });
+              }
+          } else if (d.type === 'LONG_POSITION' || d.type === 'SHORT_POSITION') {
+              if (d.targetPrice && d.stopPrice && y1 > -5000 && x1 > -5000 && x2 > -5000) {
+                  const targetY = safePriceCoord(d.targetPrice);
+                  const stopY = safePriceCoord(d.stopPrice);
+                  const isLong = d.type === 'LONG_POSITION';
+                  const riskColor = '#ef4444';
+                  const rewardColor = '#22c55e';
+                  const boxX = Math.min(x1, x2);
+                  const boxW = Math.abs(x2 - x1);
+                  
+                  if (stopY > -5000 && targetY > -5000) {
+                      const hStop = Math.abs(stopY - y1);
+                      const yStopStart = isLong ? y1 : stopY;
+                      const hTarget = Math.abs(targetY - y1);
+                      const yTargetStart = isLong ? targetY : y1;
+                      
+                      newPaths.push(<g key={`${d.id}-group`} style={{pointerEvents: pointerEventsStyle}}>
+                          <rect x={boxX} y={yStopStart} width={boxW} height={hStop} fill={riskColor} fillOpacity={0.15} stroke="none" />
+                          <rect x={boxX} y={yTargetStart} width={boxW} height={hTarget} fill={rewardColor} fillOpacity={0.15} stroke="none" />
+                          
+                          {/* Entry Line */}
+                          <line x1={boxX} y1={y1} x2={boxX+boxW} y2={y1} stroke="#71717a" strokeWidth={1} />
+                      </g>);
+
+                      // Add diagonal line connecting anchor points ONLY during creation (ghost-preview)
+                      // Moved AFTER group for Z-Index visibility
+                      const isCreating = d.id === 'ghost-preview';
+                      
+                      // Safety check: ensure coordinates are valid numbers before rendering line
+                      if (isCreating && y2 > -5000 && x1 > -5000 && x2 > -5000) {
+                          newPaths.push(
+                            <line 
+                                key={`${d.id}-connect`} 
+                                x1={x1} y1={y1} x2={x2} y2={y2} 
+                                stroke={d.color} 
+                                strokeWidth={1} 
+                                strokeDasharray="4 4" 
+                                opacity={0.8} 
+                                style={{pointerEvents: 'none'}} 
+                            />
+                          );
+                      }
+
+                      if (d.id !== 'ghost-preview') {
+                          const totalTop = Math.min(targetY, stopY);
+                          const totalH = Math.abs(targetY - stopY);
+                          newPaths.push(<rect key={`${d.id}-move`} x={boxX} y={totalTop} width={boxW} height={totalH} fill="transparent" cursor="move" onMouseDown={(e) => startDrag(e, d, 'all')} onDoubleClick={handleDblClick} style={{pointerEvents: 'auto'}} />);
+                          newPaths.push(<line key={`${d.id}-resize-w1`} x1={boxX} y1={totalTop} x2={boxX} y2={totalTop+totalH} stroke="transparent" strokeWidth={10} cursor="ew-resize" onMouseDown={(e) => startDrag(e, d, x1 < x2 ? 'p1' : 'p2')} style={{pointerEvents: 'auto'}} />);
+                          newPaths.push(<line key={`${d.id}-resize-w2`} x1={boxX+boxW} y1={totalTop} x2={boxX+boxW} y2={totalTop+totalH} stroke="transparent" strokeWidth={10} cursor="ew-resize" onMouseDown={(e) => startDrag(e, d, x1 < x2 ? 'p2' : 'p1')} style={{pointerEvents: 'auto'}} />);
+                          newPaths.push(<line key={`${d.id}-resize-top`} x1={boxX} y1={totalTop} x2={boxX+boxW} y2={totalTop} stroke="transparent" strokeWidth={10} cursor="ns-resize" onMouseDown={(e) => startDrag(e, d, isLong ? (targetY < stopY ? 'target' : 'stop') : (stopY < targetY ? 'stop' : 'target'))} style={{pointerEvents: 'auto'}} />);
+                          newPaths.push(<line key={`${d.id}-resize-bot`} x1={boxX} y1={totalTop+totalH} x2={boxX+boxW} y2={totalTop+totalH} stroke="transparent" strokeWidth={10} cursor="ns-resize" onMouseDown={(e) => startDrag(e, d, isLong ? (targetY > stopY ? 'target' : 'stop') : (stopY > targetY ? 'stop' : 'target'))} style={{pointerEvents: 'auto'}} />);
+                          newPaths.push(<line key={`${d.id}-resize-entry`} x1={boxX} y1={y1} x2={boxX+boxW} y2={y1} stroke="transparent" strokeWidth={10} cursor="ns-resize" onMouseDown={(e) => startDrag(e, d, 'entry')} style={{pointerEvents: 'auto'}} />);
+                      }
+                      const riskAmt = Math.abs(d.p1.price - d.stopPrice);
+                      const rewardAmt = Math.abs(d.targetPrice - d.p1.price);
+                      const rr = riskAmt === 0 ? 0 : rewardAmt / riskAmt;
+                      const labelX = boxX + boxW + 4; 
+
+                      const sym = activeSymbolRef.current || '';
+                      const isJpy = sym.includes('JPY');
+                      const isXau = sym.includes('XAU');
+                      const pipScalar = isJpy ? 0.01 : (isXau ? 0.01 : 0.0001);
+                      const tpPips = rewardAmt / pipScalar;
+                      const slPips = riskAmt / pipScalar;
+
+                      newPaths.push(<g key={`${d.id}-labels`} style={{pointerEvents: 'none', fontSize: '10px', fontWeight: 'bold'}}><text x={boxX + (boxW/2)} y={y1 + (isLong ? -5 : 12)} textAnchor="middle" fill="#a1a1aa">R: {rr.toFixed(2)}</text><text x={labelX} y={y1 + 3} fill="#a1a1aa">Entry: {d.p1.price.toFixed(pricePrecision)}</text><text x={labelX} y={targetY + 3} fill="#22c55e">TP: {d.targetPrice.toFixed(pricePrecision)} ({tpPips.toFixed(1)} pips)</text><text x={labelX} y={stopY + 3} fill="#ef4444">SL: {d.stopPrice.toFixed(pricePrecision)} ({slPips.toFixed(1)} pips)</text></g>);
+                  }
+              }
           }
       });
-      // ... Temp point preview ...
-      if (tempPoint && activeToolRef.current !== 'CURSOR') {
-           const logical = chartRef.current.timeScale().coordinateToLogical(mousePos.x);
-          const currentT = logical !== null ? getTimeFromLogical(logical) : null;
-          try {
-              const currentP = candleSeriesRef.current.coordinateToPrice(mousePos.y);
-              if (currentT && currentP !== null) {
-                  const tx1 = getCoord(tempPoint.time), tx2 = getCoord(currentT);
-                  const ty1 = safePriceCoord(tempPoint.price), ty2 = safePriceCoord(currentP);
-                  newPaths.push(<line key="preview" x1={tx1} y1={ty1} x2={tx2} y2={ty2} stroke={drawingSettingsRef.current.color} strokeWidth={1} strokeDasharray="5 5" opacity={0.7} />);
-              }
-          } catch(e) {}
-      }
+      
       setSvgPaths(newPaths);
   };
-  
+
   useEffect(() => {
       if (!chartRef.current) return;
-      
-      const handleVisibleRangeChange = (range: LogicalRange | null) => {
-          if (!range) return;
-          requestAnimationFrame(updateDrawings);
-          
-          if (range.from < 5 && onLoadMore) {
-              onLoadMore();
-          }
-      };
-
+      const handleVisibleRangeChange = () => requestAnimationFrame(updateDrawings);
       chartRef.current.timeScale().subscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
       const ro = new ResizeObserver(() => requestAnimationFrame(updateDrawings));
       if (chartContainerRef.current) ro.observe(chartContainerRef.current);
       updateDrawings();
-      
-      return () => { 
-          try { chartRef.current?.timeScale().unsubscribeVisibleLogicalRangeChange(handleVisibleRangeChange); } catch(e) {} 
-          ro.disconnect(); 
-      };
-  }, [drawings, data, activeTool, selectedDrawingId, dragTarget, tempPoint, mousePos, activeDragObject, pricePrecision, dragTrade, trades, onLoadMore]);
+      return () => { try { chartRef.current?.timeScale().unsubscribeVisibleLogicalRangeChange(handleVisibleRangeChange); } catch(e) {} ro.disconnect(); };
+  }, [drawings, data, activeTool, selectedDrawingId, dragTarget, tempPoint, mousePos, activeDragObject, pricePrecision, dragTrade, trades, hoverPoint, indicatorValues]);
 
   return (
     <div ref={wrapperRef} className="w-full h-full flex flex-col relative" onMouseMove={handleMouseMove} onMouseUp={handleMouseUp}>
+      {/* MAIN CHART */}
       <div className="relative flex-1 min-h-0">
           <div ref={chartContainerRef} className="w-full h-full" />
+          
+          {/* Main Chart Legend Overlay for EMAs */}
+          <div className="absolute top-2 left-2 flex flex-col gap-1 pointer-events-none z-10">
+              {indicatorConfigs.filter(c => c.type === 'EMA' && c.visible).map(config => (
+                  <div key={config.id} className="flex items-center gap-2 text-[10px] pointer-events-auto">
+                      <span 
+                          className="font-bold cursor-pointer hover:underline" 
+                          style={{color: config.color || '#2962ff'}}
+                          onDoubleClick={() => onIndicatorDblClick(config)}
+                      >
+                          EMA {config.period}
+                      </span>
+                      {/* Close Button for EMA */}
+                      <button 
+                          onClick={() => onRemoveIndicator(config.id)}
+                          className="w-3 h-3 flex items-center justify-center text-zinc-500 hover:text-red-500 transition-colors"
+                          title="Remove"
+                      >
+                          <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M6 18L18 6M6 6l12 12" /></svg>
+                      </button>
+                  </div>
+              ))}
+          </div>
+
           <svg className="absolute top-0 left-0 w-full h-full z-10 overflow-hidden" style={{pointerEvents: 'none'}}>{svgPaths}</svg>
       </div>
-      {(indicators.includes('RSI') || indicators.includes('MACD')) && (
-          <div className="h-40 border-t border-[#27272a] relative flex flex-col bg-[#18181b]">
-              <div ref={oscContainerRef} className="flex-1 w-full min-h-0" />
+      {/* INDICATOR STACKS */}
+      {activeIndicators.map(config => (
+          <div key={config.type} className="border-t border-[#27272a] relative bg-[#18181b] group flex flex-col" style={{ height: indicatorHeights[config.type] || 160 }}>
+              <div className="w-full h-1 bg-[#27272a] hover:bg-blue-500 cursor-row-resize absolute top-0 left-0 z-20 transition-colors" onMouseDown={(e) => handleResizeStart(e, config.type)} />
+              <div ref={(el) => { if (el) indicatorContainerRefs.current.set(config.type, el); }} className="w-full h-full" />
+              
+              {/* REMOVE BUTTON (Top Right) */}
+              <div className="absolute top-2 right-2 z-20 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button 
+                      onClick={() => onRemoveIndicator(config.id)}
+                      className="p-1 text-zinc-500 hover:text-red-500 hover:bg-white/5 rounded-md transition-colors"
+                      title="Remove Indicator"
+                  >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                  </button>
+              </div>
+
+              {/* Custom Legend Overlay */}
+              <div className="absolute top-2 left-2 flex items-center gap-3 text-[10px] pointer-events-none z-10">
+                  <span className="text-zinc-500 font-bold opacity-0 group-hover:opacity-100 transition-opacity pointer-events-auto cursor-pointer" onDoubleClick={() => onIndicatorDblClick(config)}>
+                      {config.type}
+                  </span>
+                  
+                  {config.type === 'RSI' && indicatorValues['RSI'] && (
+                      <span className="font-mono text-xs font-bold" style={{color: config.color || '#7e57c2'}}>
+                          {typeof indicatorValues['RSI'].rsi === 'number' ? indicatorValues['RSI'].rsi.toFixed(2) : ''}
+                      </span>
+                  )}
+
+                  {config.type === 'MACD' && indicatorValues['MACD'] && (
+                      <>
+                          <span className="font-mono text-xs font-bold" style={{color: config.color || '#2962ff'}}>
+                              {typeof indicatorValues['MACD'].macd === 'number' ? indicatorValues['MACD'].macd.toFixed(5) : ''}
+                          </span>
+                          <span className="font-mono text-xs font-bold" style={{color: config.signalColor || '#f57c00'}}>
+                              {typeof indicatorValues['MACD'].signal === 'number' ? indicatorValues['MACD'].signal.toFixed(5) : ''}
+                          </span>
+                          <span className="font-mono text-xs font-bold" style={{color: (indicatorValues['MACD'].hist || 0) >= 0 ? '#26a69a' : '#ef5350'}}>
+                              {typeof indicatorValues['MACD'].hist === 'number' ? indicatorValues['MACD'].hist.toFixed(5) : ''}
+                          </span>
+                      </>
+                  )}
+              </div>
           </div>
-      )}
+      ))}
     </div>
   );
 });

@@ -11,11 +11,16 @@ export const AnalyticsPanel: React.FC<Props> = ({ account, initialBalance }) => 
   const { history: trades, maxDrawdown } = account;
 
   const closedTrades = trades.filter(t => t.status === 'CLOSED');
+  
+  // UPDATED: Strictly separate wins, losses, and break-evens (0 PnL)
   const winTrades = closedTrades.filter(t => (t.pnl || 0) > 0);
-  const lossTrades = closedTrades.filter(t => (t.pnl || 0) <= 0);
+  const lossTrades = closedTrades.filter(t => (t.pnl || 0) < 0);
+  const breakEvens = closedTrades.filter(t => (t.pnl || 0) === 0);
 
-  const winRate = closedTrades.length > 0 
-    ? (winTrades.length / closedTrades.length) * 100 
+  // Win Rate: Wins / (Wins + Losses) -> Ignoring break-evens for purity
+  const decisiveTrades = winTrades.length + lossTrades.length;
+  const winRate = decisiveTrades > 0 
+    ? (winTrades.length / decisiveTrades) * 100 
     : 0;
   
   const totalPnL = closedTrades.reduce((acc, t) => acc + (t.pnl || 0), 0);

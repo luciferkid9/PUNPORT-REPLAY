@@ -129,8 +129,8 @@ export const MarketStructureWidget: React.FC<Props> = ({ symbol, currentSimTime,
                 </div>
                 
                 {/* Direction Arrow */}
-                <div className="col-span-3 bg-white flex items-center justify-center border-r border-zinc-200">
-                    <span className={`text-lg font-bold ${arrowColor}`}>{arrow}</span>
+                <div className={`col-span-3 flex items-center justify-center border-r border-white/10 ${bgColor}`}>
+                    <span className={`text-lg font-bold ${textColor}`}>{arrow}</span>
                 </div>
                 
                 {/* Status Text */}

@@ -1,7 +1,8 @@
 
 import React, { useState, useEffect } from 'react';
-import { AccountState, OrderSide, Trade, OrderStatus, OrderType, SymbolType } from '../types';
+import { AccountState, OrderSide, Trade, OrderStatus, OrderType, SymbolType, DragTradeUpdate } from '../types';
 import { getContractSize, DEFAULT_LEVERAGE } from '../constants';
+import { calculateRequiredMargin, calculatePnLInUSD } from '../services/logicEngine';
 
 interface Props {
   activeSymbol: SymbolType;
@@ -9,41 +10,47 @@ interface Props {
   account: AccountState;
   onPlaceOrder: (side: OrderSide, type: OrderType, entry: number, sl: number, tp: number, quantity: number) => void;
   onCloseOrder: (tradeId: string) => void;
+  activeDragTrade: DragTradeUpdate | null;
 }
 
-export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, account, onPlaceOrder, onCloseOrder }) => {
+export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, account, onPlaceOrder, onCloseOrder, activeDragTrade }) => {
   const [activeTab, setActiveTab] = useState<'MARKET' | 'LIMIT' | 'STOP'>('MARKET');
   const [lotSizeStr, setLotSizeStr] = useState<string>("1.00");
-  const [limitPrice, setLimitPrice] = useState<number>(0);
-  const [slPrice, setSlPrice] = useState<number>(0);
-  const [tpPrice, setTpPrice] = useState<number>(0);
+  
+  // Changed to String state to handle decimal typing correctly (e.g. "0.")
+  const [limitPriceStr, setLimitPriceStr] = useState<string>("");
+  const [slPriceStr, setSlPriceStr] = useState<string>("");
+  const [tpPriceStr, setTpPriceStr] = useState<string>("");
+  
   const [errorModal, setErrorModal] = useState<{ show: boolean; title: string; message: string }>({ show: false, title: '', message: '' });
 
   // Determine decimal places and pip scalar
-  // JPY pairs: 2-3 decimals, pip is 0.01
-  // XAUUSD: 2 decimals, pip is 0.01 (or 0.1 depending on broker, treating 0.01 as tick here)
-  // Forex: 4-5 decimals, pip is 0.0001
   const isJpy = activeSymbol.includes('JPY');
   const isXau = activeSymbol.includes('XAU');
   
   const pipScalar = isJpy ? 0.01 : (isXau ? 0.01 : 0.0001); 
   const digits = isJpy ? 3 : (isXau ? 2 : 5);
   
+  // Derived numeric values for calculation
+  const limitPrice = parseFloat(limitPriceStr) || 0;
+  const slPrice = parseFloat(slPriceStr) || 0;
+  const tpPrice = parseFloat(tpPriceStr) || 0;
+
   const marketEntry = Number(currentPrice.toFixed(digits));
   const targetEntry = activeTab === 'MARKET' ? marketEntry : limitPrice;
 
-  // Initialize prices
+  // Initialize prices - Only set if empty to avoid overwriting user input
   useEffect(() => {
-     if (currentPrice > 0 && limitPrice === 0) {
-         setLimitPrice(Number(currentPrice.toFixed(digits)));
+     if (currentPrice > 0 && limitPriceStr === "") {
+         setLimitPriceStr(currentPrice.toFixed(digits));
      }
   }, [currentPrice, digits]); 
 
   // Reset inputs when symbol changes
   useEffect(() => {
-      setLimitPrice(0);
-      setSlPrice(0);
-      setTpPrice(0);
+      setLimitPriceStr("");
+      setSlPriceStr("");
+      setTpPriceStr("");
   }, [activeSymbol]);
 
   const lotSize = parseFloat(lotSizeStr) || 0;
@@ -58,36 +65,11 @@ export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, accoun
   const calculateUSDValue = (targetPrice: number) => {
       if (targetPrice <= 0 || targetEntry <= 0 || lotSize <= 0) return 0;
       
-      const pips = calculatePips(targetEntry, targetPrice);
-      const contractSize = getContractSize(activeSymbol); // Standard: 100,000 for Forex
-      
-      // Basic Formula: Profit = (Close - Open) * Volume * ContractSize
+      const contractSize = getContractSize(activeSymbol); 
       const priceDiff = Math.abs(targetEntry - targetPrice);
       const rawProfit = priceDiff * lotSize * contractSize;
 
-      // Conversion to USD (Base Currency of Account)
-      // 1. XXX/USD (e.g. EURUSD) -> Profit is in USD (Quote) -> No conversion needed
-      if (activeSymbol.endsWith('USD')) {
-          return rawProfit;
-      }
-      
-      // 2. USD/XXX (e.g. USDJPY, USDCAD) -> Profit is in XXX (Quote) -> Convert to USD
-      // We need to divide by the Exchange Rate (Current Price is close enough for estimation)
-      if (activeSymbol.startsWith('USD') && currentPrice > 0) {
-          return rawProfit / currentPrice;
-      }
-      
-      // 3. Crosses (e.g. EURJPY) -> Profit is in JPY -> Convert JPY to USD
-      // Since we don't have cross-rates in this simple app, we approximate.
-      // If it ends in JPY, divide by USDJPY rate (approximated by currentPrice if it was USDJPY, but it's not)
-      // For simplicity in this demo, if it includes JPY, we divide by currentPrice (assuming price magnitude reflects rate)
-      if (activeSymbol.includes('JPY') && currentPrice > 0) {
-           // This is an approximation for simulation. Real app needs USDJPY rate.
-           return rawProfit / currentPrice; 
-      }
-      
-      // Fallback
-      return rawProfit;
+      return calculatePnLInUSD(activeSymbol, rawProfit, targetPrice);
   };
 
   const riskAmount = calculateUSDValue(slPrice);
@@ -96,29 +78,21 @@ export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, accoun
   const rewardPips = calculatePips(targetEntry, tpPrice);
 
   const riskPercent = account.equity > 0 ? (riskAmount / account.equity) * 100 : 0;
-  const rrRatio = riskAmount > 0 ? rewardAmount / riskAmount : 0;
 
   const openTrades = account.history.filter(t => t.status === OrderStatus.OPEN || t.status === OrderStatus.PENDING);
 
   const calculateUsedMargin = () => {
       return openTrades.reduce((acc, t) => {
           if (t.status === OrderStatus.OPEN) {
-            const size = getContractSize(t.symbol);
-            let margin = 0;
-            // Standard Margin Formula: (Price * Lots * Contract) / Leverage
-            // For USDXXX: (1 * Lots * 100000) / Leverage
-            // For XXXUSD: (Price * Lots * 100000) / Leverage
-            if (t.symbol.startsWith('USD')) margin = (t.quantity * size) / DEFAULT_LEVERAGE;
-            else margin = (t.entryPrice * t.quantity * size) / DEFAULT_LEVERAGE;
-            return acc + margin;
+              return acc + calculateRequiredMargin(t.symbol, t.quantity, t.entryPrice);
           }
           return acc;
       }, 0);
   };
 
-  const handlePriceChange = (setter: (val: number) => void, val: string) => {
-      const v = parseFloat(val);
-      if (!isNaN(v)) setter(v);
+  const handlePriceStringChange = (setter: (val: string) => void, val: string) => {
+      // Allow empty string or valid decimal number format
+      if (val === '' || /^\d*\.?\d*$/.test(val)) setter(val);
   };
 
   const handleLotChange = (val: string) => {
@@ -130,31 +104,26 @@ export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, accoun
       if (targetEntry <= 0) { setErrorModal({ show: true, title: 'Invalid Price', message: 'Market data is not available yet.' }); return; }
       if (lotSize <= 0) { setErrorModal({ show: true, title: 'Invalid Volume', message: 'Lot size must be greater than 0.' }); return; }
 
-      // Validate Order Types logic vs Price
       const validEntry = Number(targetEntry.toFixed(digits));
       const current = Number(currentPrice.toFixed(digits));
 
       if (activeTab === 'LIMIT') {
           if (side === OrderSide.LONG && validEntry >= current) {
-              setErrorModal({ show: true, title: 'Invalid Buy Limit', message: `Buy Limit Price (${validEntry}) must be LOWER than Current Price (${current}).\n\nDid you mean Buy Stop?` }); return;
+              setErrorModal({ show: true, title: 'Invalid Buy Limit', message: `Buy Limit Price (${validEntry}) must be LOWER than Current Price (${current}).` }); return;
           }
           if (side === OrderSide.SHORT && validEntry <= current) {
-              setErrorModal({ show: true, title: 'Invalid Sell Limit', message: `Sell Limit Price (${validEntry}) must be HIGHER than Current Price (${current}).\n\nDid you mean Sell Stop?` }); return;
+              setErrorModal({ show: true, title: 'Invalid Sell Limit', message: `Sell Limit Price (${validEntry}) must be HIGHER than Current Price (${current}).` }); return;
           }
       } else if (activeTab === 'STOP') {
           if (side === OrderSide.LONG && validEntry <= current) {
-              setErrorModal({ show: true, title: 'Invalid Buy Stop', message: `Buy Stop Price (${validEntry}) must be HIGHER than Current Price (${current}).\n\nDid you mean Buy Limit?` }); return;
+              setErrorModal({ show: true, title: 'Invalid Buy Stop', message: `Buy Stop Price (${validEntry}) must be HIGHER than Current Price (${current}).` }); return;
           }
           if (side === OrderSide.SHORT && validEntry >= current) {
-              setErrorModal({ show: true, title: 'Invalid Sell Stop', message: `Sell Stop Price (${validEntry}) must be LOWER than Current Price (${current}).\n\nDid you mean Sell Limit?` }); return;
+              setErrorModal({ show: true, title: 'Invalid Sell Stop', message: `Sell Stop Price (${validEntry}) must be LOWER than Current Price (${current}).` }); return;
           }
       }
 
-      const contractSize = getContractSize(activeSymbol);
-      let requiredMargin = 0;
-      if (activeSymbol.startsWith('USD')) requiredMargin = (lotSize * contractSize) / DEFAULT_LEVERAGE;
-      else requiredMargin = (targetEntry * lotSize * contractSize) / DEFAULT_LEVERAGE;
-
+      const requiredMargin = calculateRequiredMargin(activeSymbol, lotSize, targetEntry);
       const usedMargin = calculateUsedMargin();
       const freeMargin = account.equity - usedMargin;
 
@@ -250,13 +219,13 @@ export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, accoun
                     <div className="relative animate-in fade-in slide-in-from-top-1">
                         <label className="absolute left-4 top-1/2 -translate-y-1/2 text-xs font-bold text-blue-400 uppercase">Price</label>
                         <input 
-                            type="number" step={pipScalar}
-                            value={limitPrice} 
-                            onChange={(e) => handlePriceChange(setLimitPrice, e.target.value)}
+                            type="text" inputMode="decimal"
+                            value={limitPriceStr} 
+                            onChange={(e) => handlePriceStringChange(setLimitPriceStr, e.target.value)}
                             className="input-bubble w-full rounded-xl pl-16 pr-4 py-3 text-right text-base font-mono font-bold text-blue-100 outline-none focus:border-blue-500/50 transition-colors"
                         />
                         <button 
-                            onClick={() => setLimitPrice(Number(currentPrice.toFixed(digits)))}
+                            onClick={() => setLimitPriceStr(currentPrice.toFixed(digits))}
                             className="absolute right-[-30px] top-1/2 -translate-y-1/2 text-zinc-600 hover:text-blue-400 transition-colors p-2"
                             title="Set to Current"
                         >
@@ -281,10 +250,10 @@ export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, accoun
                         <div className="relative group">
                             <label className="absolute left-3 top-1/2 -translate-y-1/2 text-[10px] font-bold text-red-500/70 uppercase">SL</label>
                             <input 
-                                type="number" step={pipScalar}
-                                value={slPrice > 0 ? slPrice : ''}
+                                type="text" inputMode="decimal"
+                                value={slPriceStr}
                                 placeholder="0.0000"
-                                onChange={(e) => handlePriceChange(setSlPrice, e.target.value)}
+                                onChange={(e) => handlePriceStringChange(setSlPriceStr, e.target.value)}
                                 className="input-bubble w-full rounded-xl pl-8 pr-3 py-2.5 text-right text-sm font-mono font-bold text-red-200 outline-none focus:border-red-500/50 transition-colors placeholder-zinc-700"
                             />
                         </div>
@@ -296,12 +265,12 @@ export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, accoun
                     {/* TAKE PROFIT */}
                     <div className="space-y-1">
                         <div className="relative group">
-                            <label className="absolute left-3 top-1/2 -translate-y-1/2 text-[10px] font-bold text-green-500/70 uppercase">TP</label>
+                            <label className="absolute left-3 top-1/2 -translate-y-1/2 text-green-500/70 uppercase">TP</label>
                             <input 
-                                type="number" step={pipScalar}
-                                value={tpPrice > 0 ? tpPrice : ''}
+                                type="text" inputMode="decimal"
+                                value={tpPriceStr}
                                 placeholder="0.0000"
-                                onChange={(e) => handlePriceChange(setTpPrice, e.target.value)}
+                                onChange={(e) => handlePriceStringChange(setTpPriceStr, e.target.value)}
                                 className="input-bubble w-full rounded-xl pl-8 pr-3 py-2.5 text-right text-sm font-mono font-bold text-green-200 outline-none focus:border-green-500/50 transition-colors placeholder-zinc-700"
                             />
                         </div>
@@ -360,15 +329,42 @@ export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, accoun
             const isPending = trade.status === OrderStatus.PENDING;
             const priceForCalc = trade.symbol === activeSymbol ? currentPrice : trade.entryPrice;
             const contractSize = getContractSize(trade.symbol);
-            const rawPnL = (priceForCalc - trade.entryPrice) * trade.quantity * contractSize * (trade.side === OrderSide.LONG ? 1 : -1);
-            let pnlUSD = rawPnL;
             
-            // Basic conversion for display (Estimation)
-            if (trade.symbol.startsWith('USD') && currentPrice > 0) pnlUSD = rawPnL / currentPrice;
-            else if (trade.symbol.includes('JPY') && currentPrice > 0) pnlUSD = rawPnL / currentPrice;
+            // Raw PnL in Quote Currency
+            const rawPnL = (priceForCalc - trade.entryPrice) * trade.quantity * contractSize * (trade.side === OrderSide.LONG ? 1 : -1);
+            
+            // Convert to USD using robust logic
+            const pnlUSD = calculatePnLInUSD(trade.symbol, rawPnL, priceForCalc);
 
             const isPositive = pnlUSD >= 0;
             
+            // Correct digits for specific trade symbol
+            const tradeDigits = trade.symbol.includes('JPY') ? 3 : (trade.symbol.includes('XAU') ? 2 : 5);
+            
+            // DRAG OVERRIDE LOGIC
+            // If dragging, use the drag price. Otherwise use trade state.
+            let displayEntry = trade.entryPrice;
+            let displaySL = trade.stopLoss;
+            let displayTP = trade.takeProfit;
+
+            if (activeDragTrade && activeDragTrade.id === trade.id) {
+                if (activeDragTrade.type === 'ENTRY') displayEntry = activeDragTrade.price;
+                if (activeDragTrade.type === 'SL') displaySL = activeDragTrade.price;
+                if (activeDragTrade.type === 'TP') displayTP = activeDragTrade.price;
+            }
+
+            // --- PROJECTED CASH CALCULATION ---
+            const calculateProjectedCash = (targetPrice: number) => {
+                if (targetPrice <= 0) return null;
+                const multiplier = trade.side === OrderSide.LONG ? 1 : -1;
+                // Projected PnL if hit
+                const projRawPnL = (targetPrice - trade.entryPrice) * trade.quantity * contractSize * multiplier;
+                return calculatePnLInUSD(trade.symbol, projRawPnL, targetPrice);
+            };
+
+            const tpCash = calculateProjectedCash(displayTP);
+            const slCash = calculateProjectedCash(displaySL);
+
             return (
                 <div key={trade.id} className={`glass-panel rounded-xl p-3 shadow-sm transition-all group border-l-2 ${trade.side === 'LONG' ? 'border-l-green-500' : 'border-l-red-500'} ${isPending ? 'opacity-90 bg-white/[0.01]' : 'bg-white/[0.03]'}`}>
                     <div className="flex justify-between items-center mb-2">
@@ -379,17 +375,50 @@ export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, accoun
                             <span className="text-xs font-bold text-white">{trade.quantity}</span>
                             <span className="text-[10px] font-bold text-zinc-500">{trade.symbol}</span>
                         </div>
-                        <button onClick={() => onCloseOrder(trade.id)} className="text-[10px] font-bold text-zinc-500 hover:text-white px-2 py-1 rounded hover:bg-white/10 transition-colors">✕</button>
+                        
+                        <button 
+                            onClick={() => onCloseOrder(trade.id)} 
+                            className="px-2 py-1 bg-white/5 hover:bg-red-500/10 border border-white/5 hover:border-red-500/30 rounded text-[9px] font-bold uppercase tracking-wider text-zinc-400 hover:text-red-400 transition-all flex items-center space-x-1"
+                        >
+                            <span>Close Order</span>
+                        </button>
                     </div>
                     
                     <div className="flex justify-between items-center text-xs font-mono text-zinc-400">
-                        <span>@{trade.entryPrice.toFixed(digits)}</span>
+                        {/* Display Entry Price (Updated if Pending + Dragging) */}
+                        <span>@{displayEntry.toFixed(tradeDigits)}</span>
                         {!isPending && (
                             <span className={`font-bold ${isPositive ? 'text-green-400' : 'text-red-400'}`}>
                                 {isPositive ? '+' : ''}{pnlUSD.toFixed(2)}
                             </span>
                         )}
                         {isPending && <span className="text-amber-500 text-[9px] font-sans font-bold px-1.5 py-0.5 rounded bg-amber-500/10">PENDING</span>}
+                    </div>
+
+                    {/* NEW: TP/SL Display with Cash */}
+                    <div className="mt-2 pt-2 border-t border-white/5 flex justify-between items-center text-[10px] font-mono">
+                        <div className="flex items-center space-x-1.5">
+                            <span className="text-zinc-600 font-bold">TP</span>
+                            <span className={displayTP > 0 ? "text-green-400" : "text-zinc-600"}>
+                                {displayTP > 0 ? displayTP.toFixed(tradeDigits) : '---'}
+                            </span>
+                            {tpCash !== null && (
+                                <span className={`font-bold opacity-80 ${tpCash >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                                    ({tpCash >= 0 ? '+' : '-'}${Math.abs(Math.round(tpCash))})
+                                </span>
+                            )}
+                        </div>
+                        <div className="flex items-center space-x-1.5">
+                            <span className="text-zinc-600 font-bold">SL</span>
+                            <span className={displaySL > 0 ? "text-red-400" : "text-zinc-600"}>
+                                {displaySL > 0 ? displaySL.toFixed(tradeDigits) : '---'}
+                            </span>
+                            {slCash !== null && (
+                                <span className={`font-bold opacity-80 ${slCash >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                                    ({slCash >= 0 ? '+' : '-'}${Math.abs(Math.round(slCash))})
+                                </span>
+                            )}
+                        </div>
                     </div>
                 </div>
             );

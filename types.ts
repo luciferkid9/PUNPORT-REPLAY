@@ -16,6 +16,12 @@ export enum OrderStatus {
   CLOSED = 'CLOSED'
 }
 
+export interface DragTradeUpdate {
+    id: string;
+    type: 'SL' | 'TP' | 'ENTRY';
+    price: number;
+}
+
 export interface TradeJournal {
     tags: string[];
     confidence: number; // 1-5
@@ -68,8 +74,25 @@ export interface SimulationState {
   maxIndex: number;
 }
 
-export type ToolType = 'CURSOR' | 'TRENDLINE' | 'FIB' | 'LONG_POSITION' | 'SHORT_POSITION';
-export type IndicatorType = 'SMA' | 'RSI' | 'MACD';
+export type ToolType = 'CURSOR' | 'TRENDLINE' | 'FIB' | 'LONG_POSITION' | 'SHORT_POSITION' | 'RECTANGLE' | 'KILLZONE' | 'TEXT';
+export type IndicatorType = 'EMA' | 'RSI' | 'MACD';
+
+export interface IndicatorConfig {
+    id: string; // Unique ID for multiple instances
+    type: IndicatorType;
+    visible: boolean;
+    color?: string; // Main line color
+    // MACD Settings
+    fastLength?: number;
+    slowLength?: number;
+    signalLength?: number;
+    signalColor?: string; // Signal line color
+    histogramColor?: string; // Histogram color
+    // RSI Settings
+    period?: number;
+    upperLevel?: number;
+    lowerLevel?: number;
+}
 
 export interface Point {
     time: number;
@@ -82,6 +105,7 @@ export interface DrawingSettings {
     color: string;
     lineWidth: number;
     lineStyle: LineStyle;
+    fontSize?: number; // For Text Tool
 }
 
 export interface FibLevel {
@@ -90,9 +114,28 @@ export interface FibLevel {
     visible: boolean;
 }
 
+export interface SessionConfig {
+    enabled: boolean;
+    label: string;
+    color: string;
+    start: string; // HH:MM
+    end: string;   // HH:MM
+}
+
+export interface KillZoneConfig {
+    asian: SessionConfig;
+    london: SessionConfig;
+    ny: SessionConfig;
+    showHighLowLines: boolean; // Line : Top/Bottom
+    showAverage: boolean;
+    extend: boolean;
+    showLabel: boolean;
+    opacity: number; // Added opacity control (0-1)
+}
+
 export interface DrawingObject {
     id: string;
-    symbol: SymbolType; // Added symbol binding
+    symbol: SymbolType; 
     type: ToolType;
     p1: Point;
     p2: Point; 
@@ -101,17 +144,22 @@ export interface DrawingObject {
     color: string;
     lineWidth: number;
     lineStyle: LineStyle;
+    text?: string; 
+    fontSize?: number; // Added for Text Tool
     fibLevels?: FibLevel[]; 
     // For Position Tools
     stopPrice?: number;
     targetPrice?: number;
     riskAmount?: number;
+    // For Kill Zone
+    killZoneConfig?: KillZoneConfig;
 }
 
+// Updated SymbolType to match Supabase folders
 export type SymbolType = 
-  | 'EURUSD' | 'GBPUSD' | 'USDJPY' | 'USDCAD' | 'AUDUSD' | 'NZDUSD'
-  | 'EURJPY' | 'GBPJPY' | 'EURAUD' | 'GBPAUD'
-  | 'XAUUSD' | 'XAGUSD'
+  | 'AUDUSD' | 'EURAUD' | 'EURJPY' | 'EURUSD' 
+  | 'GBPAUD' | 'GBPJPY' | 'GBPUSD' | 'NZDUSD' 
+  | 'USDCHF' | 'USDJPY' | 'XAGUSD' | 'XAUUSD'
   | 'CUSTOM'; 
 
 // Removed M1, starting from M2

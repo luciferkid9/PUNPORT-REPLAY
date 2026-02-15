@@ -18,27 +18,48 @@ interface Props {
   onUpdateTrade?: (id: string, journal: TradeJournal) => void;
 }
 
+const MetricCard: React.FC<{ label: string; value: string; sub?: string; color?: string }> = ({ label, value, sub, color }) => (
+    <div className="glass-panel p-4 rounded-xl flex flex-col justify-center bg-white/[0.02] border border-white/5">
+        <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest mb-1">{label}</span>
+        <span className={`text-xl font-mono font-black tracking-tight ${color || 'text-white'}`}>{value}</span>
+        {sub && <span className="text-[10px] text-zinc-600 font-medium mt-1">{sub}</span>}
+    </div>
+);
+
 export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentSimTime, timePlayed, activeTimeframe, onClose, onUpdateTrade }) => {
   const { history: trades, balance, maxDrawdown } = account;
-  const closedTrades = trades.filter(t => t.status === OrderStatus.CLOSED);
+  
+  // Filter out cancelled pending orders. 
+  // A valid trade must be CLOSED AND have an entryTime.
+  const closedTrades = trades.filter(t => t.status === OrderStatus.CLOSED && t.entryTime !== undefined);
+  
   const [editingTradeId, setEditingTradeId] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const dashboardRef = useRef<HTMLDivElement>(null);
   const [calendarDate, setCalendarDate] = useState(() => new Date(currentSimTime * 1000));
 
+  // UPDATED: Segregate trades strictly
   const wins = closedTrades.filter(t => (t.pnl || 0) > 0);
-  const losses = closedTrades.filter(t => (t.pnl || 0) <= 0);
+  const losses = closedTrades.filter(t => (t.pnl || 0) < 0); // Strictly less than 0
+  const breakEvens = closedTrades.filter(t => (t.pnl || 0) === 0); // Exactly 0
+
   const totalPnL = closedTrades.reduce((acc, t) => acc + (t.pnl || 0), 0);
-  const winRate = closedTrades.length > 0 ? (wins.length / closedTrades.length) * 100 : 0;
+  
+  // Win Rate Calculation: Wins / (Wins + Losses). Exclude Break-evens from the ratio.
+  const decisiveTrades = wins.length + losses.length;
+  const winRate = decisiveTrades > 0 ? (wins.length / decisiveTrades) * 100 : 0;
+  
   const avgWin = wins.length > 0 ? wins.reduce((a, b) => a + (b.pnl || 0), 0) / wins.length : 0;
   const avgLoss = losses.length > 0 ? losses.reduce((a, b) => a + (b.pnl || 0), 0) / losses.length : 0;
+  
+  // Expectancy per trade (including BEs is fairer for overall system value, or exclude them? Standard usually includes all "Valid" trades)
+  // Let's stick to Total PnL / Total Trades (including BE) for Expectancy to show "Value per Click"
   const expectancy = closedTrades.length > 0 ? totalPnL / closedTrades.length : 0;
 
   let totalDuration = 0;
   closedTrades.forEach(t => { if (t.entryTime && t.closeTime) totalDuration += (t.closeTime - t.entryTime); });
   const avgDurationSeconds = closedTrades.length > 0 ? totalDuration / closedTrades.length : 0;
 
-  // UPDATED: More detailed duration formatting
   const formatDuration = (seconds: number) => {
       if (!seconds && seconds !== 0) return "--";
       const absSeconds = Math.abs(seconds);
@@ -57,11 +78,25 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
       return parts.join(' ');
   };
 
+  const formatDate = (ts: number | undefined) => {
+      if (!ts) return "--";
+      return new Date(ts * 1000).toLocaleString('th-TH', { 
+          day: '2-digit', month: 'short', year: '2-digit', 
+          hour: '2-digit', minute: '2-digit', hour12: false 
+      });
+  };
+
   // UPDATED: R:R Calculation Logic for Average
   let totalRMultiple = 0;
   let countR = 0;
   closedTrades.forEach(t => {
-      const riskDist = t.initialStopLoss ? Math.abs(t.entryPrice - t.initialStopLoss) : 0;
+      // Skip Break-Evens for R:R Avg to avoid skewing data
+      if ((t.pnl || 0) === 0) return;
+
+      // Fallback: Use current stopLoss if initialStopLoss is 0 (entry without SL)
+      const effectiveSL = (t.initialStopLoss && t.initialStopLoss > 0) ? t.initialStopLoss : t.stopLoss;
+      const riskDist = effectiveSL > 0 ? Math.abs(t.entryPrice - effectiveSL) : 0;
+
       if (riskDist > 0 && t.closePrice) {
           let priceMove = t.closePrice - t.entryPrice;
           if (t.side === 'SHORT') priceMove = -priceMove;
@@ -199,7 +234,7 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
             
             {/* KEY METRICS */}
             <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
-                <MetricCard label="Total Trades" value={closedTrades.length.toString()} sub={`W: ${wins.length} | L: ${losses.length}`} />
+                <MetricCard label="Total Trades" value={closedTrades.length.toString()} sub={`W:${wins.length} L:${losses.length} BE:${breakEvens.length}`} />
                 <MetricCard label="Win Rate" value={`${winRate.toFixed(1)}%`} color={winRate > 50 ? 'text-green-400' : 'text-red-400'} />
                 <MetricCard label="Expectancy" value={`$${expectancy.toFixed(2)}`} sub="Per Trade" color={expectancy > 0 ? 'text-green-400' : 'text-zinc-200'} />
                 <MetricCard label="Avg Duration" value={formatDuration(avgDurationSeconds)} sub="Holding Time" />
@@ -222,7 +257,12 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                                 </linearGradient>
                             </defs>
                             <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
-                            <Tooltip contentStyle={{ backgroundColor: '#18181b', borderColor: '#3f3f46', color: '#fff', fontSize: '14px', borderRadius: '8px' }} itemStyle={{ color: '#3b82f6' }} formatter={(val: number) => [`$${val.toFixed(2)}`, 'Balance']} />
+                            <Tooltip 
+                                contentStyle={{ backgroundColor: '#18181b', borderColor: '#3f3f46', color: '#fff', fontSize: '14px', borderRadius: '8px' }} 
+                                itemStyle={{ color: '#3b82f6' }} 
+                                formatter={(val: number) => [`$${val.toFixed(2)}`, 'Balance']} 
+                                animationDuration={0}
+                            />
                             <Area type="monotone" dataKey="balance" stroke="#3b82f6" strokeWidth={2} fillOpacity={1} fill="url(#colorEq)" />
                         </AreaChart>
                     </ResponsiveContainer>
@@ -256,7 +296,7 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                         <BarChart data={sessionData}>
                             <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
                             <XAxis dataKey="name" stroke="#71717a" fontSize={11} tickLine={false} axisLine={false} />
-                            <Tooltip cursor={{fill: 'transparent'}} contentStyle={{ backgroundColor: '#18181b', borderColor: '#3f3f46', fontSize: '12px', borderRadius: '8px' }} />
+                            <Tooltip cursor={{fill: 'transparent'}} contentStyle={{ backgroundColor: '#18181b', borderColor: '#3f3f46', fontSize: '12px', borderRadius: '8px' }} animationDuration={0} />
                             <Bar dataKey="pnl" radius={[4, 4, 0, 0]}>{sessionData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.pnl >= 0 ? '#4ade80' : '#f87171'} />)}</Bar>
                         </BarChart>
                     </ResponsiveContainer>
@@ -267,7 +307,7 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                          <BarChart data={dayData}>
                             <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
                             <XAxis dataKey="name" stroke="#71717a" fontSize={11} tickLine={false} axisLine={false} />
-                            <Tooltip cursor={{fill: 'transparent'}} contentStyle={{ backgroundColor: '#18181b', borderColor: '#3f3f46', fontSize: '12px', borderRadius: '8px' }} />
+                            <Tooltip cursor={{fill: 'transparent'}} contentStyle={{ backgroundColor: '#18181b', borderColor: '#3f3f46', fontSize: '12px', borderRadius: '8px' }} animationDuration={0} />
                             <Bar dataKey="pnl" radius={[4, 4, 0, 0]}>{dayData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.pnl >= 0 ? '#4ade80' : '#f87171'} />)}</Bar>
                         </BarChart>
                     </ResponsiveContainer>
@@ -298,6 +338,7 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                             <tr className="border-b border-white/5 text-[11px] uppercase text-zinc-500 font-bold bg-black/20">
                                 <th className="p-4">#</th>
                                 <th className="p-4">Type</th>
+                                <th className="p-4">Time (Open/Close)</th>
                                 <th className="p-4">Entry/Exit</th>
                                 <th className="p-4">Duration</th>
                                 <th className="p-4">R:R (Real / Plan)</th>
@@ -310,10 +351,14 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                                 const duration = (t.closeTime && t.entryTime) ? (t.closeTime - t.entryTime) : 0;
                                 
                                 // UPDATED: Detailed R:R Calculation
-                                const riskDist = t.initialStopLoss ? Math.abs(t.entryPrice - t.initialStopLoss) : 0;
-                                let rrDisplay = <span className="text-zinc-600">---</span>;
+                                // Fallback: Use current stopLoss if initialStopLoss is 0 (entry without SL)
+                                const effectiveSL = (t.initialStopLoss && t.initialStopLoss > 0) ? t.initialStopLoss : t.stopLoss;
+                                const riskDist = effectiveSL > 0 ? Math.abs(t.entryPrice - effectiveSL) : 0;
                                 
-                                if (riskDist > 0 && t.closePrice) {
+                                let rrDisplay = <span className="text-zinc-600">---</span>;
+                                const isBreakEven = (t.pnl || 0) === 0;
+                                
+                                if (riskDist > 0 && t.closePrice && !isBreakEven) {
                                     // Calculate Price Move based on Direction
                                     let priceMove = t.closePrice - t.entryPrice;
                                     if (t.side === 'SHORT') priceMove = -priceMove;
@@ -339,6 +384,8 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                                             )}
                                         </div>
                                     );
+                                } else if (isBreakEven) {
+                                    rrDisplay = <span className="text-[10px] font-bold text-zinc-500 bg-white/5 px-2 py-1 rounded">BREAK EVEN</span>;
                                 }
 
                                 return (
@@ -350,8 +397,14 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                                         <td className="p-4 text-zinc-500">{closedTrades.length - idx}</td>
                                         <td className="p-4">
                                             <div className="flex flex-col">
-                                                <span className={`font-bold ${t.side === 'LONG' ? 'text-green-500' : 'text-red-500'}`}>{t.side}</span>
-                                                <span className="text-[10px] text-zinc-500">{t.symbol}</span>
+                                                <span className={`font-black text-xs ${t.side === 'LONG' ? 'text-green-500' : 'text-red-500'}`}>{t.side}</span>
+                                                <span className="text-xs font-bold text-zinc-400 mt-0.5">{t.symbol}</span>
+                                            </div>
+                                        </td>
+                                        <td className="p-4">
+                                            <div className="flex flex-col text-xs font-mono font-medium text-zinc-300">
+                                                <span>{formatDate(t.entryTime)}</span>
+                                                <span className="text-zinc-500">{formatDate(t.closeTime)}</span>
                                             </div>
                                         </td>
                                         <td className="p-4 text-zinc-400">
@@ -375,7 +428,7 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                                                 <span className="text-xs text-zinc-600 italic group-hover:text-blue-400">+ Note</span>
                                             )}
                                         </td>
-                                        <td className={`p-4 text-right font-black ${(t.pnl || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                        <td className={`p-4 text-right font-black ${(t.pnl || 0) > 0 ? 'text-green-400' : (t.pnl || 0) < 0 ? 'text-red-400' : 'text-zinc-400'}`}>
                                             ${(t.pnl || 0).toFixed(2)}
                                         </td>
                                     </tr>
@@ -391,11 +444,3 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
     </div>
   );
 };
-
-const MetricCard = ({ label, value, sub, color = 'text-white' }: { label: string, value: string, sub?: string, color?: string }) => (
-    <div className="glass-panel border border-white/5 p-4 rounded-xl flex flex-col justify-center min-w-0 bg-white/[0.02] overflow-hidden shadow-sm">
-        <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider mb-1 truncate" title={label}>{label}</span>
-        <span className={`text-xl md:text-2xl font-mono font-black tracking-tight ${color} truncate drop-shadow-sm`} title={value}>{value}</span>
-        {sub && <span className="text-[9px] text-zinc-600 mt-0.5 truncate" title={sub}>{sub}</span>}
-    </div>
-);

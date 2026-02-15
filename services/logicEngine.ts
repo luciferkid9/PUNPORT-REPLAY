@@ -1,8 +1,60 @@
 
-import { Candle } from "../types";
-import { getContractSize } from "../constants";
+import { Candle, TimeframeType } from "../types";
+import { getContractSize, DEFAULT_LEVERAGE, TF_SECONDS } from "../constants";
 
-// Simulate ta.sma(close, length)
+// --- CANDLE RESAMPLING ---
+export const resampleCandles = (baseData: Candle[], targetTimeframe: TimeframeType): Candle[] => {
+    const periodSeconds = TF_SECONDS[targetTimeframe];
+    if (!periodSeconds || baseData.length === 0) return baseData;
+
+    // Use a map to aggregate to handle gaps gracefully
+    const buckets = new Map<number, Candle[]>();
+
+    baseData.forEach(c => {
+        // Floor the time to the nearest period start
+        const bucketTime = Math.floor(c.time / periodSeconds) * periodSeconds;
+        if (!buckets.has(bucketTime)) {
+            buckets.set(bucketTime, []);
+        }
+        buckets.get(bucketTime)!.push(c);
+    });
+
+    const resampled: Candle[] = [];
+    const sortedTimes = Array.from(buckets.keys()).sort((a, b) => a - b);
+
+    sortedTimes.forEach(time => {
+        const group = buckets.get(time)!;
+        // Sort group by time to ensure Open is first and Close is last
+        group.sort((a, b) => a.time - b.time);
+
+        const open = group[0].open;
+        const close = group[group.length - 1].close;
+        let high = -Infinity;
+        let low = Infinity;
+        let volume = 0;
+
+        group.forEach(c => {
+            if (c.high > high) high = c.high;
+            if (c.low < low) low = c.low;
+            volume += (c.volume || 0);
+        });
+
+        resampled.push({
+            time,
+            open,
+            high,
+            low,
+            close,
+            volume
+        });
+    });
+
+    return resampled;
+};
+
+// --- STANDARD MOVING AVERAGES ---
+
+// Simple Moving Average (SMA)
 export const calculateSMA = (data: Candle[], period: number): { time: number; value: number }[] => {
   const smaData = [];
   for (let i = period - 1; i < data.length; i++) {
@@ -16,154 +68,157 @@ export const calculateSMA = (data: Candle[], period: number): { time: number; va
   return smaData;
 };
 
-// Simulate ta.ema(close, length)
+// Exponential Moving Average (EMA) - Standard with SMA Seed
 export const calculateEMA = (data: Candle[], period: number): { time: number; value: number }[] => {
-  const k = 2 / (period + 1);
-  const emaData = [];
-  if (data.length === 0) return [];
+  if (data.length < period) return [];
   
-  let ema = data[0].close;
+  const k = 2 / (period + 1);
+  const emaData: { time: number; value: number }[] = [];
 
-  for (let i = 0; i < data.length; i++) {
+  // 1. Initialize with SMA
+  let sum = 0;
+  for (let i = 0; i < period; i++) {
+      sum += data[i].close;
+  }
+  let ema = sum / period;
+  
+  // Push first point at index = period - 1
+  emaData.push({ time: data[period - 1].time, value: ema });
+
+  // 2. Calculate subsequent EMAs
+  for (let i = period; i < data.length; i++) {
     const price = data[i].close;
-    if (i === 0) {
-      ema = price;
-    } else {
-      ema = price * k + ema * (1 - k);
-    }
+    ema = (price * k) + (ema * (1 - k));
     emaData.push({ time: data[i].time, value: ema });
   }
+  
   return emaData;
 };
 
-// Simulate ta.rsi(close, length)
+/**
+ * Standard RSI (Wilder's Smoothing)
+ * Correct Implementation:
+ * - Needs 'period' + 1 data points to start.
+ * - First value calculated using SMA of gains/losses.
+ * - Subsequent values use Wilder's smoothing.
+ */
 export const calculateRSI = (data: Candle[], period: number = 14): { time: number; value: number }[] => {
-    const rsiData = [];
     if (data.length <= period) return [];
 
-    let gains = 0;
-    let losses = 0;
+    const rsiData: { time: number; value: number }[] = [];
+    
+    let avgGain = 0;
+    let avgLoss = 0;
 
-    // Initial calculation
+    // 1. Initial Calculation (SMA Phase)
+    // Calculate sum of gains/losses for the first 'period'
     for (let i = 1; i <= period; i++) {
         const change = data[i].close - data[i - 1].close;
-        if (change > 0) gains += change;
-        else losses += Math.abs(change);
+        if (change > 0) avgGain += change;
+        else avgLoss += Math.abs(change);
     }
 
-    let avgGain = gains / period;
-    let avgLoss = losses / period;
+    avgGain /= period;
+    avgLoss /= period;
 
+    // Calculate first RSI at index 'period'
+    let rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+    let rsi = 100 - (100 / (1 + rs));
+    rsiData.push({ time: data[period].time, value: rsi });
+
+    // 2. Smoothing Phase (Wilder's)
     for (let i = period + 1; i < data.length; i++) {
         const change = data[i].close - data[i - 1].close;
-        const gain = change > 0 ? change : 0;
-        const loss = change < 0 ? Math.abs(change) : 0;
+        const currentGain = change > 0 ? change : 0;
+        const currentLoss = change < 0 ? Math.abs(change) : 0;
 
-        avgGain = (avgGain * (period - 1) + gain) / period;
-        avgLoss = (avgLoss * (period - 1) + loss) / period;
+        // Wilder's Smoothing Formula
+        avgGain = ((avgGain * (period - 1)) + currentGain) / period;
+        avgLoss = ((avgLoss * (period - 1)) + currentLoss) / period;
 
-        let rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
-        let rsi = 100 - (100 / (1 + rs));
+        rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+        rsi = 100 - (100 / (1 + rs));
 
         rsiData.push({ time: data[i].time, value: rsi });
     }
+
     return rsiData;
 }
 
 /**
- * ProMACD Logic (Hybrid Adaptive Calculation)
- * Ensures valid MACD values from Candle #1 (Index 0).
+ * Standard MACD
+ * - Fast EMA (12)
+ * - Slow EMA (26)
+ * - Signal (9)
+ * Note: Uses SMA seeding for EMAs, so valid values start later than index 0.
  */
 export const calculateMACD = (data: Candle[], fastLen: number = 12, slowLen: number = 26, signalLen: number = 9) => {
-    if (data.length === 0) return { macd: [], signal: [], histogram: [] };
+    // Need at least enough data for the slow EMA to start
+    if (data.length < slowLen) return { macd: [], signal: [], histogram: [] };
+
+    // Helper for pure number arrays to easier handling
+    const closes = data.map(c => c.close);
+    const times = data.map(c => c.time);
+
+    const calcEMAArray = (values: number[], period: number): (number | null)[] => {
+        const k = 2 / (period + 1);
+        const result: (number | null)[] = new Array(values.length).fill(null);
+        
+        let sum = 0;
+        for (let i = 0; i < period; i++) sum += values[i];
+        
+        let ema = sum / period;
+        result[period - 1] = ema;
+
+        for (let i = period; i < values.length; i++) {
+            ema = (values[i] * k) + (ema * (1 - k));
+            result[i] = ema;
+        }
+        return result;
+    };
+
+    const fastEMA = calcEMAArray(closes, fastLen);
+    const slowEMA = calcEMAArray(closes, slowLen);
 
     const macdLine: { time: number; value: number }[] = [];
+    const macdValues: number[] = [];
+    const validIndices: number[] = [];
+
+    // Calculate MACD Line (Fast - Slow)
+    for (let i = 0; i < data.length; i++) {
+        if (fastEMA[i] !== null && slowEMA[i] !== null) {
+            const val = (fastEMA[i] as number) - (slowEMA[i] as number);
+            macdLine.push({ time: times[i], value: val });
+            macdValues.push(val);
+            validIndices.push(i); // Keep track of original indices
+        }
+    }
+
+    // Calculate Signal Line (EMA of MACD)
+    // Signal line applies EMA logic to the MACD values
+    const signalValuesRaw = calcEMAArray(macdValues, signalLen);
+    
     const signalLine: { time: number; value: number }[] = [];
     const histogram: { time: number; value: number }[] = [];
 
-    // State variables for EMA calculation (used after index 26)
-    let prevFastEMA = 0;
-    let prevSlowEMA = 0;
-    let prevSignalEMA = 0;
+    for (let i = 0; i < signalValuesRaw.length; i++) {
+        if (signalValuesRaw[i] !== null) {
+            const sigVal = signalValuesRaw[i] as number;
+            const macdVal = macdValues[i];
+            // Map back to original time
+            const originalIndex = validIndices[i];
+            const time = times[originalIndex];
 
-    const kFast = 2 / (fastLen + 1);
-    const kSlow = 2 / (slowLen + 1);
-    const kSignal = 2 / (signalLen + 1);
-
-    for (let i = 0; i < data.length; i++) {
-        const candle = data[i];
-        const close = candle.close;
-        const time = candle.time;
-
-        let fastVal = 0;
-        let slowVal = 0;
-        let macdVal = 0;
-
-        // --- 1. FAST & SLOW Line Calculation ---
-
-        if (i === 0) {
-            // [Bar 0] Price Action Fallback
-            // Use (Close - Open) to determine initial momentum
-            const bodySize = close - candle.open;
-            
-            // If body is effectively zero (Doji), force a tiny positive epsilon to avoid division by zero later
-            const momentum = bodySize !== 0 ? bodySize : 0.00001;
-            
-            // We manipulate Fast/Slow to produce MACD = momentum
-            // Fast = Close + momentum, Slow = Close
-            // MACD = Fast - Slow = momentum
-            fastVal = close + momentum; 
-            slowVal = close;
-            
-            // Seed EMAs
-            prevFastEMA = fastVal;
-            prevSlowEMA = slowVal;
-
-        } else if (i < slowLen) {
-            // [Bar 1 - 25] Early Stage: Cumulative SMA
-            // Use average of ALL available data points for Slow Line
-            // This ensures stability while history is building up
-            
-            const startFast = Math.max(0, i + 1 - fastLen);
-            const fastSlice = data.slice(startFast, i + 1);
-            fastVal = fastSlice.reduce((sum, c) => sum + c.close, 0) / fastSlice.length;
-
-            const slowSlice = data.slice(0, i + 1);
-            slowVal = slowSlice.reduce((sum, c) => sum + c.close, 0) / slowSlice.length;
-
-            prevFastEMA = fastVal;
-            prevSlowEMA = slowVal;
-        } else {
-            // [Bar 26+] Standard EMA Logic
-            fastVal = (close * kFast) + (prevFastEMA * (1 - kFast));
-            slowVal = (close * kSlow) + (prevSlowEMA * (1 - kSlow));
-            
-            prevFastEMA = fastVal;
-            prevSlowEMA = slowVal;
+            signalLine.push({ time, value: sigVal });
+            histogram.push({ time, value: macdVal - sigVal });
         }
-
-        macdVal = fastVal - slowVal;
-        macdLine.push({ time, value: macdVal });
-
-        // --- 2. SIGNAL Line Calculation ---
-
-        let signalVal = 0;
-        
-        if (i < signalLen) {
-            // Early Signal: Use 50% of MACD value to force a visible Histogram
-            // If MACD is 10, Signal is 5 -> Hist is 5 (Visible)
-            signalVal = macdVal * 0.5;
-            prevSignalEMA = signalVal;
-        } else {
-            // Standard Signal EMA
-            signalVal = (macdVal * kSignal) + (prevSignalEMA * (1 - kSignal));
-            prevSignalEMA = signalVal;
-        }
-
-        signalLine.push({ time, value: signalVal });
-        histogram.push({ time, value: macdVal - signalVal });
     }
 
+    // We also need to filter the MACD line to match where Signal starts?
+    // Usually trading platforms show MACD line as soon as it's available, 
+    // but Histogram/Signal appear later.
+    // However, for clean charting, we return all available points.
+    
     return { macd: macdLine, signal: signalLine, histogram };
 }
 
@@ -172,42 +227,24 @@ export type MarketTrend =
     | 'BEARISH_MOMENTUM' 
     | 'SIDEWAY_UP' 
     | 'SIDEWAY_DOWN' 
-    | 'BULLISH_EARLY'       
-    | 'BEARISH_EARLY' 
-    | 'SIDEWAY_UP_EARLY' 
-    | 'SIDEWAY_DOWN_EARLY'
     | 'UNKNOWN';
 
 export const analyzeMarketTrend = (data: Candle[]): MarketTrend => {
-    if (data.length === 0) return 'UNKNOWN';
+    // Need substantial data for standard MACD to be valid
+    if (data.length < 50) return 'UNKNOWN'; 
     
-    // Calculate using ProMACD logic
     const { macd, signal } = calculateMACD(data);
     
     if (macd.length === 0 || signal.length === 0) return 'UNKNOWN';
 
+    // Get latest values
     const lastMacd = macd[macd.length - 1].value;
     const lastSignal = signal[signal.length - 1].value;
 
-    const isEarly = data.length < 26; 
-
-    // Absolute Fallback: Even if calculations yield 0, use Price Action
-    const isTinyValues = Math.abs(lastMacd) < 0.00000001;
-
-    if (isTinyValues) {
-        const lastCandle = data[data.length - 1];
-        const isBullishCandle = lastCandle.close >= lastCandle.open;
-        return isBullishCandle ? 'BULLISH_EARLY' : 'BEARISH_EARLY';
-    }
-
-    // Standard Trend Logic
     if (lastMacd > lastSignal) {
-        if (lastMacd > 0) return isEarly ? 'BULLISH_EARLY' : 'BULLISH_MOMENTUM';
-        else return isEarly ? 'SIDEWAY_UP_EARLY' : 'SIDEWAY_UP';
-    } 
-    else {
-        if (lastMacd < 0) return isEarly ? 'BEARISH_EARLY' : 'BEARISH_MOMENTUM';
-        else return isEarly ? 'SIDEWAY_DOWN_EARLY' : 'SIDEWAY_DOWN';
+        return lastMacd > 0 ? 'BULLISH_MOMENTUM' : 'SIDEWAY_UP';
+    } else {
+        return lastMacd < 0 ? 'BEARISH_MOMENTUM' : 'SIDEWAY_DOWN';
     }
 };
 
@@ -228,4 +265,52 @@ export const calculatePositionSize = (
   const lots = riskAmount / (priceDiff * contractSize);
   
   return Math.floor(lots * 100) / 100;
+};
+
+// --- STATIC RATES FOR CROSS PAIR CONVERSION ---
+const STATIC_RATES: Record<string, number> = {
+    'EUR': 1.08, 
+    'GBP': 1.27, 
+    'AUD': 0.65, 
+    'NZD': 0.60, 
+    'CAD': 0.73, 
+    'CHF': 1.13,
+    'USD': 1.0
+};
+
+// --- MARGIN CALCULATION LOGIC ---
+export const calculateRequiredMargin = (symbol: string, lots: number, price: number): number => {
+    const contractSize = getContractSize(symbol);
+    const leverage = DEFAULT_LEVERAGE; 
+
+    const baseMargin = (lots * contractSize) / leverage;
+
+    if (symbol.startsWith('USD')) {
+        return baseMargin;
+    }
+
+    if (symbol.endsWith('USD')) {
+        return baseMargin * price;
+    }
+
+    const base = symbol.substring(0, 3);
+    const conversionRate = STATIC_RATES[base] || 1.0;
+    
+    return baseMargin * conversionRate;
+};
+
+// --- PNL CONVERSION LOGIC ---
+export const calculatePnLInUSD = (symbol: string, rawPnL: number, price: number): number => {
+    if (rawPnL === 0) return 0;
+    
+    if (symbol.endsWith('USD')) {
+        return rawPnL;
+    }
+
+    const base = symbol.substring(0, 3);
+    const baseRate = STATIC_RATES[base] || 1.0;
+    
+    if (price === 0) return 0;
+
+    return rawPnL * (baseRate / price);
 };

@@ -1,6 +1,7 @@
 
-
 import { Candle, SymbolType, TimeframeType } from '../types';
+import { resampleCandles } from './logicEngine';
+import { TF_SECONDS, SYMBOL_CONFIG } from '../constants';
 
 // --- SUPABASE CONFIGURATION ---
 const SUPABASE_URL = 'https://ruhtusfckrsqflgymawe.supabase.co';
@@ -72,36 +73,23 @@ const sanitizeCandles = (data: any[]): Candle[] => {
 // --- CUSTOM DATA HELPERS ---
 const getCustomData = (): Candle[] => DATA_CACHE['CUSTOM-BASE'] || [];
 
-/**
- * Initial Load by Date: Fetch context data leading up to the start time.
- * FIXED: Added AbortSignal, no-store cache, and CUSTOM symbol support.
- */
-export const fetchContextCandles = async (
-    symbol: SymbolType, 
-    timeframe: TimeframeType, 
-    endTime: number, 
-    limit: number = 500, // Increased default limit
+// --- INTERNAL FETCH HELPER ---
+const fetchRawCandles = async (
+    symbol: SymbolType,
+    timeframe: TimeframeType,
+    operator: 'lt' | 'gt',
+    timestamp: number,
+    limit: number,
+    order: 'asc' | 'desc',
     signal?: AbortSignal
 ): Promise<Candle[]> => {
-    // 1. Handle CUSTOM (CSV) Data locally
-    if (symbol === 'CUSTOM') {
-        const allData = getCustomData();
-        // Simple filter for context: all candles BEFORE endTime, take the last 'limit'
-        const context = allData.filter(c => c.time < endTime);
-        // Return the last N candles
-        return context.slice(-limit);
-    }
-
-    // 2. Handle Server Data
     try {
         const url = new URL(`${SUPABASE_URL}/rest/v1/${TABLE_NAME}`);
         url.searchParams.set('symbol', `eq.${symbol}`);
         url.searchParams.set('tf', `eq.${timeframe}`);
-        url.searchParams.set('time', `lt.${toIsoString(endTime)}`); 
-        url.searchParams.set('order', 'time.desc'); 
+        url.searchParams.set('time', `${operator}.${toIsoString(timestamp)}`);
+        url.searchParams.set('order', `time.${order}`);
         url.searchParams.set('limit', limit.toString());
-
-        console.log(`[API] Fetching Context: ${url.toString()}`);
 
         const response = await fetch(url.toString(), {
             method: 'GET',
@@ -114,21 +102,51 @@ export const fetchContextCandles = async (
             signal
         });
 
-        if (!response.ok) {
-            console.error(`[API Error] Context: ${response.status}`);
-            return []; 
-        }
-
+        if (!response.ok) return [];
         const rawData = await response.json();
-        const candles = sanitizeCandles(rawData);
-        console.log(`[API] Context Result: ${candles.length} candles`);
-        return candles; 
+        return sanitizeCandles(rawData);
     } catch (error: any) {
-        if (error.name !== 'AbortError') {
-            console.error('Fetch context failed:', error);
-        }
+        if (error.name !== 'AbortError') console.error('Fetch raw failed:', error);
         return [];
     }
+}
+
+/**
+ * Initial Load by Date: Fetch context data leading up to the start time.
+ * UPDATED: Includes Fallback Logic (M2 -> Target TF) but NO Mock Data
+ */
+export const fetchContextCandles = async (
+    symbol: SymbolType, 
+    timeframe: TimeframeType, 
+    endTime: number, 
+    limit: number = 500,
+    signal?: AbortSignal
+): Promise<Candle[]> => {
+    // 1. Handle CUSTOM (CSV) Data locally
+    if (symbol === 'CUSTOM') {
+        const allData = getCustomData();
+        const baseContext = allData.filter(c => c.time < endTime);
+        const resampled = resampleCandles(baseContext, timeframe);
+        return resampled.slice(-limit);
+    }
+
+    // 2. Try Fetching Requested Timeframe directly
+    let candles = await fetchRawCandles(symbol, timeframe, 'lt', endTime, limit, 'desc', signal);
+
+    // 3. Fallback: If no data found and TF is NOT M2, try fetching M2 and resampling
+    if (candles.length === 0 && timeframe !== 'M2') {
+        const ratio = (TF_SECONDS[timeframe] || 3600) / TF_SECONDS['M2'];
+        const fallbackLimit = Math.min(Math.floor(limit * ratio), 50000); 
+
+        const baseCandles = await fetchRawCandles(symbol, 'M2', 'lt', endTime, fallbackLimit, 'desc', signal);
+        
+        if (baseCandles.length > 0) {
+            const resampled = resampleCandles(baseCandles, timeframe);
+            candles = resampled.slice(-limit);
+        }
+    }
+
+    return candles;
 };
 
 /**
@@ -141,40 +159,30 @@ export const fetchFutureCandles = async (
     limit: number = 100,
     signal?: AbortSignal
 ): Promise<Candle[]> => {
-    // 1. Handle CUSTOM (CSV) Data locally
     if (symbol === 'CUSTOM') {
         const allData = getCustomData();
-        // Filter for future: all candles AFTER startTime, take the first 'limit'
-        const future = allData.filter(c => c.time > startTime);
-        return future.slice(0, limit);
+        const baseFuture = allData.filter(c => c.time > startTime);
+        const resampled = resampleCandles(baseFuture, timeframe);
+        return resampled.filter(c => c.time > startTime).slice(0, limit);
     }
 
-    try {
-        const url = new URL(`${SUPABASE_URL}/rest/v1/${TABLE_NAME}`);
-        url.searchParams.set('symbol', `eq.${symbol}`);
-        url.searchParams.set('tf', `eq.${timeframe}`);
-        url.searchParams.set('time', `gt.${toIsoString(startTime)}`); 
-        url.searchParams.set('order', 'time.asc'); 
-        url.searchParams.set('limit', limit.toString());
+    // 1. Try Target TF
+    let candles = await fetchRawCandles(symbol, timeframe, 'gt', startTime, limit, 'asc', signal);
 
-        const response = await fetch(url.toString(), {
-            method: 'GET',
-            headers: {
-                'apikey': SUPABASE_KEY,
-                'Authorization': `Bearer ${SUPABASE_KEY}`,
-                'Content-Type': 'application/json'
-            },
-            cache: 'no-store',
-            signal
-        });
+    // 2. Fallback to M2 (Added for Robustness across all TFs)
+    if (candles.length === 0 && timeframe !== 'M2') {
+        const ratio = (TF_SECONDS[timeframe] || 3600) / TF_SECONDS['M2'];
+        const fallbackLimit = Math.min(Math.floor(limit * ratio), 50000);
 
-        if (!response.ok) return [];
-
-        const rawData = await response.json();
-        return sanitizeCandles(rawData);
-    } catch (error: any) {
-        return [];
+        const baseCandles = await fetchRawCandles(symbol, 'M2', 'gt', startTime, fallbackLimit, 'asc', signal);
+        
+        if (baseCandles.length > 0) {
+            const resampled = resampleCandles(baseCandles, timeframe);
+            candles = resampled.filter(c => c.time > startTime).slice(0, limit);
+        }
     }
+
+    return candles;
 };
 
 /**
@@ -187,51 +195,38 @@ export const fetchHistoricalData = async (
     limit: number = 200,
     signal?: AbortSignal
 ): Promise<Candle[]> => {
-    // 1. Handle CUSTOM (CSV) Data locally
     if (symbol === 'CUSTOM') {
         const allData = getCustomData();
-        // Filter for history: all candles BEFORE beforeTimestamp
-        const history = allData.filter(c => c.time < beforeTimestamp);
-        // Since we want the "latest" of the history (closest to beforeTimestamp) going backwards
-        // We take the last N from that filtered list
-        return history.slice(-limit);
+        const baseHistory = allData.filter(c => c.time < beforeTimestamp);
+        const resampled = resampleCandles(baseHistory, timeframe);
+        return resampled.slice(-limit);
     }
 
-    try {
-        const url = new URL(`${SUPABASE_URL}/rest/v1/${TABLE_NAME}`);
-        url.searchParams.set('symbol', `eq.${symbol}`);
-        url.searchParams.set('tf', `eq.${timeframe}`);
-        url.searchParams.set('time', `lt.${toIsoString(beforeTimestamp)}`);
-        url.searchParams.set('order', 'time.desc');
-        url.searchParams.set('limit', limit.toString());
+    // 1. Try Target TF
+    let candles = await fetchRawCandles(symbol, timeframe, 'lt', beforeTimestamp, limit, 'desc', signal);
 
-        const response = await fetch(url.toString(), {
-            method: 'GET',
-            headers: {
-                'apikey': SUPABASE_KEY,
-                'Authorization': `Bearer ${SUPABASE_KEY}`,
-                'Content-Type': 'application/json'
-            },
-            cache: 'no-store',
-            signal
-        });
+    // 2. Fallback to M2
+    if (candles.length === 0 && timeframe !== 'M2') {
+        const ratio = (TF_SECONDS[timeframe] || 3600) / TF_SECONDS['M2'];
+        const fallbackLimit = Math.min(Math.floor(limit * ratio), 50000);
 
-        if (!response.ok) return [];
-
-        const rawData = await response.json();
-        return sanitizeCandles(rawData);
-    } catch (error: any) {
-        return [];
+        const baseCandles = await fetchRawCandles(symbol, 'M2', 'lt', beforeTimestamp, fallbackLimit, 'desc', signal);
+        
+        if (baseCandles.length > 0) {
+            const resampled = resampleCandles(baseCandles, timeframe);
+            candles = resampled.slice(-limit);
+        }
     }
+
+    return candles;
 };
 
 /**
  * Fetch the absolute first candle available in the database (Oldest).
- * If timeframe is omitted, it fetches the absolute oldest candle across ALL timeframes.
  */
 export const fetchFirstCandle = async (
     symbol: SymbolType, 
-    timeframe?: TimeframeType, // Optional: if undefined, fetch across all TFs
+    timeframe?: TimeframeType, 
     signal?: AbortSignal
 ): Promise<Candle | null> => {
     if (symbol === 'CUSTOM') {
@@ -244,11 +239,11 @@ export const fetchFirstCandle = async (
         url.searchParams.set('symbol', `eq.${symbol}`);
         if (timeframe) {
             url.searchParams.set('tf', `eq.${timeframe}`);
+        } else {
+            url.searchParams.set('tf', `eq.M2`);
         }
         url.searchParams.set('order', 'time.asc'); 
         url.searchParams.set('limit', '1');
-
-        console.log(`[API] Finding First Candle (${timeframe || 'ALL'}): ${url.toString()}`);
 
         const response = await fetch(url.toString(), {
             method: 'GET',
@@ -262,25 +257,24 @@ export const fetchFirstCandle = async (
         });
 
         if (!response.ok) return null;
-
+        
         const rawData = await response.json();
         const candles = sanitizeCandles(rawData);
-        return candles.length > 0 ? candles[0] : null;
+        
+        if (candles.length > 0) return candles[0];
+        return null;
+
     } catch (error: any) {
-        if (error.name !== 'AbortError') {
-            console.error('Fetch first candle failed:', error);
-        }
         return null;
     }
 };
 
 /**
  * Fetch the absolute last candle available in the database (Newest).
- * If timeframe is omitted, it fetches the absolute newest candle across ALL timeframes.
  */
 export const fetchLastCandle = async (
     symbol: SymbolType, 
-    timeframe?: TimeframeType, // Optional: if undefined, fetch across all TFs
+    timeframe?: TimeframeType,
     signal?: AbortSignal
 ): Promise<Candle | null> => {
     if (symbol === 'CUSTOM') {
@@ -297,8 +291,6 @@ export const fetchLastCandle = async (
         url.searchParams.set('order', 'time.desc'); // Descending order
         url.searchParams.set('limit', '1');
 
-        console.log(`[API] Finding Last Candle (${timeframe || 'ALL'}): ${url.toString()}`);
-
         const response = await fetch(url.toString(), {
             method: 'GET',
             headers: {
@@ -311,14 +303,14 @@ export const fetchLastCandle = async (
         });
 
         if (!response.ok) return null;
-
+        
         const rawData = await response.json();
         const candles = sanitizeCandles(rawData);
-        return candles.length > 0 ? candles[0] : null;
+        
+        if (candles.length > 0) return candles[0];
+        return null;
+
     } catch (error: any) {
-        if (error.name !== 'AbortError') {
-             console.error('Fetch last candle failed:', error);
-        }
         return null;
     }
 };
