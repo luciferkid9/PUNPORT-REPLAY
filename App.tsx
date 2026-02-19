@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { INITIAL_BALANCE, SYMBOL_CONFIG, getContractSize, TF_SECONDS, DEFAULT_LEVERAGE, STOP_OUT_LEVEL } from './constants';
-import { AccountState, SimulationState, OrderSide, OrderType, Trade, OrderStatus, ToolType, DrawingObject, IndicatorConfig, IndicatorType, DrawingSettings, SymbolType, TimeframeType, Candle, TraderProfile, TradeJournal, KillZoneConfig, DragTradeUpdate } from './types';
+import { AccountState, SimulationState, OrderSide, OrderType, Trade, OrderStatus, ToolType, DrawingObject, IndicatorConfig, IndicatorType, DrawingSettings, SymbolType, TimeframeType, Candle, TraderProfile, TradeJournal, KillZoneConfig, DragTradeUpdate, FibLevel } from './types';
 import { ChartContainer, ChartRef } from './components/ChartContainer';
 import { AccountDashboard } from './components/AccountDashboard';
 import { OrderPanel } from './components/OrderPanel';
@@ -32,6 +32,20 @@ const DEFAULT_KILLZONE_CONFIG: KillZoneConfig = {
     showLabel: true,        
     opacity: 0.15           
 };
+
+// ADDED: 0.886 Level to default configuration
+const DEFAULT_FIB_LEVELS: FibLevel[] = [
+    { level: 0, color: '#94a3b8', visible: true },
+    { level: 0.236, color: '#ef4444', visible: false }, 
+    { level: 0.382, color: '#ef4444', visible: true },
+    { level: 0.5, color: '#22c55e', visible: true },
+    { level: 0.618, color: '#eab308', visible: true },
+    { level: 0.786, color: '#3b82f6', visible: true },
+    { level: 0.886, color: '#6366f1', visible: true }, // Added 0.886
+    { level: 1, color: '#a1a1aa', visible: true },
+    { level: 1.272, color: '#f87171', visible: true },
+    { level: 1.618, color: '#a855f7', visible: true }, 
+];
 
 const App: React.FC = () => {
   // --- STATE ---
@@ -80,6 +94,9 @@ const App: React.FC = () => {
       lineStyle: 'solid' 
   });
 
+  // State to hold the current Fib Levels preference (persists through session)
+  const [currentFibLevels, setCurrentFibLevels] = useState<FibLevel[]>(DEFAULT_FIB_LEVELS);
+
   const currentSlice = useMemo(() => {
       if (chartData.length === 0) return [];
       return chartData.slice(0, Math.min(simState.currentIndex + 1, chartData.length));
@@ -100,6 +117,12 @@ const App: React.FC = () => {
   // Check if Kill Zone exists
   const hasKillZone = useMemo(() => {
       return currentDrawings.some(d => d.type === 'KILLZONE');
+  }, [currentDrawings]);
+
+  // Determine active KillZone Config for Dashboard
+  const activeKillZoneConfig = useMemo(() => {
+      const kz = currentDrawings.find(d => d.type === 'KILLZONE');
+      return kz?.killZoneConfig || DEFAULT_KILLZONE_CONFIG;
   }, [currentDrawings]);
 
   // 1. INIT & PERSISTENCE
@@ -296,24 +319,39 @@ const App: React.FC = () => {
                      const candleEndTime = activeCandle.time + tfSecs;
                      if (simTime < candleEndTime - 1) {
                          try {
-                             const granularData = await fetchContextCandles(activeSymbol, 'M2', simTime + 1, 300, controller.signal); 
+                             // Fetch granular data (increased limit to 1500 to cover large TFs like D1)
+                             const granularData = await fetchContextCandles(activeSymbol, 'M2', simTime + 1, 1500, controller.signal); 
                              const relevant = granularData.filter(c => c.time >= activeCandle.time && c.time <= simTime);
+                             
                              if (relevant.length > 0) {
-                                 let open = relevant[0].open;
+                                 // REALISTIC CANDLE RECONSTRUCTION
+                                 let open = activeCandle.open; // Use TF Open to keep structure
                                  let close = relevant[relevant.length - 1].close;
-                                 let high = -Infinity;
-                                 let low = Infinity;
+                                 let high = open;
+                                 let low = open;
                                  let volume = 0;
+                                 
                                  relevant.forEach(c => {
                                      if (c.high > high) high = c.high;
                                      if (c.low < low) low = c.low;
+                                     if (c.close > high) high = c.close; // Ensure bounds
+                                     if (c.close < low) low = c.close;
                                      volume += c.volume || 0;
                                  });
                                  finalVisible[newIndex] = { time: activeCandle.time, open, high, low, close, volume };
                                  setCurrentRealTimePrice(close);
-                             } else { setCurrentRealTimePrice(activeCandle.close); }
-                         } catch (err) { setCurrentRealTimePrice(activeCandle.close); }
-                     } else { setCurrentRealTimePrice(activeCandle.close); }
+                             } else { 
+                                 // If no granular data yet, default to open (start of candle)
+                                 finalVisible[newIndex] = { ...activeCandle, high: activeCandle.open, low: activeCandle.open, close: activeCandle.open, volume: 0 };
+                                 setCurrentRealTimePrice(activeCandle.open); 
+                             }
+                         } catch (err) { 
+                             setCurrentRealTimePrice(activeCandle.open);
+                             finalVisible[newIndex] = { ...activeCandle, high: activeCandle.open, low: activeCandle.open, close: activeCandle.open };
+                         }
+                     } else { 
+                         setCurrentRealTimePrice(activeCandle.close); 
+                     }
                  }
                  warmupDataRef.current = finalWarmup;
                  setChartData(finalVisible);
@@ -422,16 +460,23 @@ const App: React.FC = () => {
   }, [simState.currentIndex, chartData, activeTimeframe, simState.isPlaying, isLoading]);
 
   const handleStep = () => {
-      setSimState(prev => {
-          const nextIndex = prev.currentIndex + 1;
-          if (nextIndex >= prev.maxIndex) return prev;
-          const candles = chartDataRef.current;
-          if (candles && candles[nextIndex]) {
-              const duration = TF_SECONDS[activeTimeframe] || 60;
-              setCurrentSimTime(candles[nextIndex].time + duration);
-          }
-          return { ...prev, currentIndex: nextIndex };
-      });
+      const candles = chartDataRef.current;
+      const prevIndex = simState.currentIndex;
+      const maxIndex = simState.maxIndex;
+
+      if (!candles || prevIndex + 1 >= maxIndex) return;
+
+      const nextIndex = prevIndex + 1;
+      const nextCandle = candles[nextIndex];
+
+      // 1. Advance Index
+      setSimState(prev => ({ ...prev, currentIndex: nextIndex }));
+
+      // 2. Explicitly Advance Time so switching TFs aligns correctly
+      if (nextCandle) {
+          const duration = TF_SECONDS[activeTimeframe] || 60;
+          setCurrentSimTime(nextCandle.time + duration);
+      }
   };
 
   // ... (Indicators) ...
@@ -565,17 +610,8 @@ const App: React.FC = () => {
       const symbolDrawing = { ...d, symbol: activeSymbol };
       const isPosition = d.type === 'LONG_POSITION' || d.type === 'SHORT_POSITION';
       if (d.type === 'FIB') {
-        symbolDrawing.fibLevels = [
-            { level: 0, color: '#94a3b8', visible: true },
-            { level: 0.236, color: '#ef4444', visible: false }, // HIDE DEFAULT
-            { level: 0.382, color: '#ef4444', visible: true },
-            { level: 0.5, color: '#22c55e', visible: true },
-            { level: 0.618, color: '#eab308', visible: true },
-            { level: 0.786, color: '#3b82f6', visible: true },
-            { level: 1, color: '#a1a1aa', visible: true },
-            { level: 1.272, color: '#f87171', visible: true },
-            { level: 1.618, color: '#a855f7', visible: true }, // SHOW DEFAULT
-        ];
+        // USE CURRENT DEFAULT LEVELS (Persistent state)
+        symbolDrawing.fibLevels = currentFibLevels.map(l => ({...l})); 
       } else if (isPosition) {
         const isLong = d.type === 'LONG_POSITION';
         const entryPrice = d.p1.price;
@@ -599,7 +635,15 @@ const App: React.FC = () => {
       }
       setAllDrawings(prev => [...prev, symbolDrawing]); setSelectedDrawingId(d.id); setActiveTool('CURSOR'); 
   };
-  const handleDrawingUpdate = (updated: DrawingObject) => setAllDrawings(prev => prev.map(d => d.id === updated.id ? updated : d));
+  
+  const handleDrawingUpdate = (updated: DrawingObject) => {
+      // IF UPDATING FIB, SAVE SETTINGS AS NEW DEFAULT
+      if (updated.type === 'FIB' && updated.fibLevels) {
+          setCurrentFibLevels(updated.fibLevels.map(l => ({...l})));
+      }
+      setAllDrawings(prev => prev.map(d => d.id === updated.id ? updated : d));
+  };
+  
   const handleDrawingDelete = (id: string) => setAllDrawings(prev => prev.filter(d => d.id !== id));
 
   const handleModifyTrade = (tradeId: string, newSl: number, newTp: number) => {
@@ -733,7 +777,7 @@ const App: React.FC = () => {
       <AccountDashboard 
         account={account} currentPrice={tradingPrice} currentDate={currentSimTime} activeSymbol={activeSymbol} activeTimeframe={activeTimeframe} simState={simState} availableSymbols={activeProfile.selectedSymbols || []}
         pricePrecision={currentDigits}
-        onSymbolChange={handleSymbolChange} onTimeframeChange={setActiveTimeframe} onPlayPause={() => setSimState(s => ({...s, isPlaying: !s.isPlaying}))} onNext={tick} onSpeedChange={(v) => setSimState(s => ({...s, speed: v}))} onJumpToDate={handleJumpToDate} onToggleStats={() => setShowStats(true)} onExit={handleExitProfile}
+        onSymbolChange={handleSymbolChange} onTimeframeChange={setActiveTimeframe} onPlayPause={() => setSimState(s => ({...s, isPlaying: !s.isPlaying}))} onNext={handleStep} onSpeedChange={(v) => setSimState(s => ({...s, speed: v}))} onJumpToDate={handleJumpToDate} onToggleStats={() => setShowStats(true)} onExit={handleExitProfile}
       />
       
       {isLoading && <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"><div className="flex flex-col items-center"><div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4"></div><div className="text-blue-400 font-bold animate-pulse">Processing Data...</div></div></div>}
@@ -757,7 +801,7 @@ const App: React.FC = () => {
           </div>
       )}
 
-      {showStats && <DetailedStats account={account} sessionStart={activeProfile.startDate} currentSimTime={currentSimTime} timePlayed={activeProfile.timePlayed || 0} activeTimeframe={activeTimeframe} onClose={() => setShowStats(false)} onUpdateTrade={handleUpdateTrade} />}
+      {showStats && <DetailedStats account={account} sessionStart={activeProfile.startDate} currentSimTime={currentSimTime} timePlayed={activeProfile.timePlayed || 0} activeTimeframe={activeTimeframe} killZoneConfig={activeKillZoneConfig} onClose={() => setShowStats(false)} onUpdateTrade={handleUpdateTrade} />}
       {editingIndicator && <IndicatorSettingsModal config={editingIndicator} onSave={handleIndicatorUpdate} onClose={() => setEditingIndicator(null)} />}
 
       <div className="flex flex-1 overflow-hidden relative p-3 gap-3">
@@ -783,7 +827,7 @@ const App: React.FC = () => {
                     className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200 group relative ${activeTool === 'TEXT' ? 'bg-blue-500/20 text-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.2)] ring-1 ring-blue-500/50' : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'}`} 
                     title="Text Box"
                 >
-                    <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 4h12M12 4v16" /></svg>
+                    <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 4h16M12 4v16" /></svg>
                 </button>
                 <button 
                     onClick={handleAddAutoKillZone} 

@@ -24,20 +24,12 @@ export const DrawingSettingsModal: React.FC<Props> = ({ drawing, onSave, onClose
       return copy;
   });
   
-  const [activeTab, setActiveTab] = useState<'STYLE' | 'COORDS' | 'FIB' | 'KZ' | 'TEXT'>('STYLE');
+  // Determine Tabs based on Type
+  let availableTabs: string[] = ['STYLE'];
+  if (drawing.type === 'FIB') availableTabs = ['STYLE', 'LEVELS'];
+  if (drawing.type === 'KILLZONE') availableTabs = ['SETTINGS'];
 
-  useEffect(() => {
-      if (drawing.type === 'KILLZONE') setActiveTab('KZ');
-      if (drawing.type === 'TEXT') setActiveTab('TEXT');
-  }, [drawing.type]);
-
-  const tabs = drawing.type === 'FIB' 
-    ? ['STYLE', 'COORDS', 'FIB'] 
-    : drawing.type === 'KILLZONE'
-    ? ['KZ', 'COORDS']
-    : drawing.type === 'TEXT'
-    ? ['TEXT', 'STYLE', 'COORDS']
-    : ['STYLE', 'COORDS'];
+  const [activeTab, setActiveTab] = useState<string>(availableTabs[0]);
 
   const handleLevelChange = (index: number, field: keyof FibLevel, value: any) => {
       setLocalDrawing(prev => {
@@ -93,13 +85,13 @@ export const DrawingSettingsModal: React.FC<Props> = ({ drawing, onSave, onClose
 
         {/* Tabs */}
         <div className="flex border-b border-white/10 shrink-0">
-            {tabs.map(tab => (
+            {availableTabs.map(tab => (
                 <button
                     key={tab}
-                    onClick={() => setActiveTab(tab as any)}
+                    onClick={() => setActiveTab(tab)}
                     className={`flex-1 py-2 text-xs font-bold transition-all ${activeTab === tab ? 'text-blue-400 border-b-2 border-blue-500 bg-white/5' : 'text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.02]'}`}
                 >
-                    {tab === 'FIB' ? 'LEVELS' : tab === 'KZ' ? 'SETTINGS' : tab === 'TEXT' ? 'CONTENT' : tab}
+                    {tab}
                 </button>
             ))}
         </div>
@@ -107,31 +99,8 @@ export const DrawingSettingsModal: React.FC<Props> = ({ drawing, onSave, onClose
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-4 scrollbar-thin scrollbar-thumb-zinc-700">
             
-            {/* --- TEXT CONTENT SPECIFIC UI --- */}
-            {activeTab === 'TEXT' && (
-                <div className="space-y-4">
-                    <div>
-                        <label className="text-[10px] text-zinc-500 block mb-1 font-bold">Text Content</label>
-                        <textarea 
-                            value={localDrawing.text || ''}
-                            onChange={(e) => setLocalDrawing({...localDrawing, text: e.target.value})}
-                            className="w-full bg-black/20 border border-white/5 rounded-lg p-2 text-sm text-white outline-none focus:border-blue-500/50 min-h-[80px]"
-                        />
-                    </div>
-                    <div>
-                        <label className="text-[10px] text-zinc-500 block mb-1 font-bold">Font Size</label>
-                        <input 
-                            type="number"
-                            value={localDrawing.fontSize || 14}
-                            onChange={(e) => setLocalDrawing({...localDrawing, fontSize: parseInt(e.target.value)})}
-                            className="w-full bg-black/20 border border-white/5 rounded-lg p-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50"
-                        />
-                    </div>
-                </div>
-            )}
-
-            {/* --- KILL ZONE SPECIFIC UI --- */}
-            {activeTab === 'KZ' && localDrawing.killZoneConfig && (
+            {/* --- KILL ZONE SPECIFIC UI (RENAMED TO SETTINGS) --- */}
+            {activeTab === 'SETTINGS' && localDrawing.killZoneConfig && (
                 <div className="space-y-4">
                     {/* Asian Session */}
                     <div className="flex items-center gap-2">
@@ -231,110 +200,87 @@ export const DrawingSettingsModal: React.FC<Props> = ({ drawing, onSave, onClose
                 </div>
             )}
 
-            {/* --- STANDARD STYLE UI --- */}
+            {/* --- STYLE (MERGED WITH TEXT/CONTENT) --- */}
             {activeTab === 'STYLE' && (
-                <div className="space-y-3">
-                    {/* RECTANGLE Label Input */}
-                    {localDrawing.type === 'RECTANGLE' && (
+                <div className="space-y-4">
+                    
+                    {/* Content Section (Merged) */}
+                    {['TEXT', 'TRENDLINE', 'RECTANGLE'].includes(localDrawing.type) && (
+                        <div className="space-y-3 pb-4 border-b border-white/5">
+                            <div>
+                                <label className="text-[10px] text-zinc-500 block mb-1 font-bold">
+                                    {localDrawing.type === 'TEXT' ? 'Text Content' : 'Label'}
+                                </label>
+                                <textarea 
+                                    value={localDrawing.text || ''}
+                                    onChange={(e) => setLocalDrawing({...localDrawing, text: e.target.value})}
+                                    className="w-full bg-black/20 border border-white/5 rounded-lg p-2 text-sm text-white outline-none focus:border-blue-500/50 min-h-[60px]"
+                                    placeholder={localDrawing.type === 'TEXT' ? "Enter text..." : "Enter label (optional)..."}
+                                />
+                            </div>
+                            {localDrawing.type === 'TEXT' && (
+                                <div>
+                                    <label className="text-[10px] text-zinc-500 block mb-1 font-bold">Font Size</label>
+                                    <input 
+                                        type="number"
+                                        value={localDrawing.fontSize || 14}
+                                        onChange={(e) => setLocalDrawing({...localDrawing, fontSize: parseInt(e.target.value)})}
+                                        className="w-full bg-black/20 border border-white/5 rounded-lg p-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50"
+                                    />
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* Standard Visual Style */}
+                    <div className="space-y-3">
                         <div>
-                            <label className="text-[10px] text-zinc-500 block mb-1 font-bold">Zone Label</label>
-                            <input 
-                                type="text"
-                                value={localDrawing.text || ''}
-                                onChange={(e) => setLocalDrawing({...localDrawing, text: e.target.value})}
-                                placeholder="e.g. Supply Zone"
-                                className="w-full bg-black/20 border border-white/5 rounded-lg p-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50 placeholder-zinc-700"
-                            />
+                            <label className="text-[10px] text-zinc-500 block mb-1 font-bold">{localDrawing.type === 'TEXT' ? 'Text Color' : 'Line Color'}</label>
+                            <div className="flex items-center space-x-2 bg-black/20 p-1.5 rounded-lg border border-white/5">
+                                <input 
+                                    type="color" 
+                                    value={localDrawing.color}
+                                    onChange={(e) => setLocalDrawing({...localDrawing, color: e.target.value})}
+                                    className="w-6 h-6 rounded bg-transparent cursor-pointer border-none"
+                                />
+                                <span className="text-xs font-mono text-zinc-400">{localDrawing.color}</span>
+                            </div>
                         </div>
-                    )}
-
-                    <div>
-                        <label className="text-[10px] text-zinc-500 block mb-1 font-bold">{localDrawing.type === 'TEXT' ? 'Text Color' : 'Line Color'}</label>
-                        <div className="flex items-center space-x-2 bg-black/20 p-1.5 rounded-lg border border-white/5">
-                            <input 
-                                type="color" 
-                                value={localDrawing.color}
-                                onChange={(e) => setLocalDrawing({...localDrawing, color: e.target.value})}
-                                className="w-6 h-6 rounded bg-transparent cursor-pointer border-none"
-                            />
-                            <span className="text-xs font-mono text-zinc-400">{localDrawing.color}</span>
-                        </div>
+                        {localDrawing.type !== 'TEXT' && (
+                            <>
+                                <div>
+                                    <label className="text-[10px] text-zinc-500 block mb-1 font-bold">Line Width</label>
+                                    <select 
+                                        value={localDrawing.lineWidth}
+                                        onChange={(e) => setLocalDrawing({...localDrawing, lineWidth: Number(e.target.value)})}
+                                        className="w-full bg-black/20 border border-white/5 rounded-lg p-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50"
+                                    >
+                                        <option value={1}>1px</option>
+                                        <option value={2}>2px</option>
+                                        <option value={3}>3px</option>
+                                        <option value={4}>4px</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="text-[10px] text-zinc-500 block mb-1 font-bold">Line Style</label>
+                                    <select 
+                                        value={localDrawing.lineStyle}
+                                        onChange={(e) => setLocalDrawing({...localDrawing, lineStyle: e.target.value as LineStyle})}
+                                        className="w-full bg-black/20 border border-white/5 rounded-lg p-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50"
+                                    >
+                                        <option value="solid">Solid</option>
+                                        <option value="dashed">Dashed</option>
+                                        <option value="dotted">Dotted</option>
+                                    </select>
+                                </div>
+                            </>
+                        )}
                     </div>
-                    {localDrawing.type !== 'TEXT' && (
-                        <>
-                            <div>
-                                <label className="text-[10px] text-zinc-500 block mb-1 font-bold">Line Width</label>
-                                <select 
-                                    value={localDrawing.lineWidth}
-                                    onChange={(e) => setLocalDrawing({...localDrawing, lineWidth: Number(e.target.value)})}
-                                    className="w-full bg-black/20 border border-white/5 rounded-lg p-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50"
-                                >
-                                    <option value={1}>1px</option>
-                                    <option value={2}>2px</option>
-                                    <option value={3}>3px</option>
-                                    <option value={4}>4px</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label className="text-[10px] text-zinc-500 block mb-1 font-bold">Line Style</label>
-                                <select 
-                                    value={localDrawing.lineStyle}
-                                    onChange={(e) => setLocalDrawing({...localDrawing, lineStyle: e.target.value as LineStyle})}
-                                    className="w-full bg-black/20 border border-white/5 rounded-lg p-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50"
-                                >
-                                    <option value="solid">Solid</option>
-                                    <option value="dashed">Dashed</option>
-                                    <option value="dotted">Dotted</option>
-                                </select>
-                            </div>
-                        </>
-                    )}
                 </div>
             )}
 
-            {activeTab === 'COORDS' && (
-                <div className="space-y-3">
-                     <div className="p-2.5 bg-white/5 rounded-lg border border-white/5">
-                        <div className="text-[10px] font-bold text-zinc-400 mb-1.5">Point 1 (Start)</div>
-                        <div className="grid grid-cols-1 gap-2">
-                             <div>
-                                 <label className="text-[9px] text-zinc-500 block mb-0.5">Price</label>
-                                 <input 
-                                    type="number" step="0.00001"
-                                    value={localDrawing.p1.price}
-                                    onChange={(e) => setLocalDrawing({
-                                        ...localDrawing, 
-                                        p1: { ...localDrawing.p1, price: parseFloat(e.target.value) }
-                                    })}
-                                    className="w-full bg-black/30 border border-white/5 rounded-md p-1 text-xs text-zinc-200 outline-none font-mono"
-                                 />
-                             </div>
-                        </div>
-                     </div>
-
-                     {localDrawing.type !== 'TEXT' && localDrawing.type !== 'KILLZONE' && (
-                         <div className="p-2.5 bg-white/5 rounded-lg border border-white/5">
-                            <div className="text-[10px] font-bold text-zinc-400 mb-1.5">Point 2 (End)</div>
-                            <div className="grid grid-cols-1 gap-2">
-                                 <div>
-                                     <label className="text-[9px] text-zinc-500 block mb-0.5">Price</label>
-                                     <input 
-                                        type="number" step="0.00001"
-                                        value={localDrawing.p2.price}
-                                        onChange={(e) => setLocalDrawing({
-                                            ...localDrawing, 
-                                            p2: { ...localDrawing.p2, price: parseFloat(e.target.value) }
-                                        })}
-                                        className="w-full bg-black/30 border border-white/5 rounded-md p-1 text-xs text-zinc-200 outline-none font-mono"
-                                     />
-                                 </div>
-                            </div>
-                         </div>
-                     )}
-                </div>
-            )}
-
-            {activeTab === 'FIB' && localDrawing.fibLevels && (
+            {/* --- FIB LEVELS (RENAMED TO LEVELS) --- */}
+            {activeTab === 'LEVELS' && localDrawing.fibLevels && (
                 <div className="space-y-3">
                     <div className="bg-white/5 p-2.5 rounded-lg border border-white/5">
                         <label className="text-[9px] text-zinc-500 font-bold uppercase mb-1.5 block">Quick Add</label>

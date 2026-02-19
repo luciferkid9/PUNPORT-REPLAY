@@ -68,8 +68,7 @@ export const MarketStructureWidget: React.FC<Props> = ({ symbol, currentSimTime,
         
         let bgColor = 'bg-zinc-700';
         let text = 'Loading...';
-        let arrow = '-';
-        let arrowColor = 'text-zinc-500';
+        let ArrowIcon = <span className="text-zinc-400 font-bold">-</span>;
         let textColor = 'text-zinc-300';
         let suffix = '';
 
@@ -90,29 +89,41 @@ export const MarketStructureWidget: React.FC<Props> = ({ symbol, currentSimTime,
                 case 'BULLISH_MOMENTUM':
                     bgColor = 'bg-green-600';
                     text = 'Bullish Momentum';
-                    arrow = '⬆';
-                    arrowColor = 'text-green-500';
+                    ArrowIcon = (
+                        <svg className="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={3}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 10l7-7m0 0l7 7m-7-7v18" />
+                        </svg>
+                    );
                     textColor = 'text-white';
                     break;
                 case 'BEARISH_MOMENTUM':
                     bgColor = 'bg-red-600';
                     text = 'Bearish Momentum';
-                    arrow = '⬇';
-                    arrowColor = 'text-red-500';
+                    ArrowIcon = (
+                        <svg className="w-5 h-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={3}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+                        </svg>
+                    );
                     textColor = 'text-white';
                     break;
                 case 'SIDEWAY_UP':
                     bgColor = 'bg-amber-400';
                     text = 'Sideway Up';
-                    arrow = '↗';
-                    arrowColor = 'text-amber-500';
+                    ArrowIcon = (
+                        <svg className="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={3}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M7 17L17 7M17 7H7M17 7V17" />
+                        </svg>
+                    );
                     textColor = 'text-zinc-900';
                     break;
                 case 'SIDEWAY_DOWN':
                     bgColor = 'bg-amber-400';
                     text = 'Sideway Down';
-                    arrow = '↘';
-                    arrowColor = 'text-amber-500';
+                    ArrowIcon = (
+                        <svg className="w-5 h-5 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={3}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M7 7l10 10m0 0V7m0 10H7" />
+                        </svg>
+                    );
                     textColor = 'text-zinc-900';
                     break;
                 default:
@@ -128,9 +139,9 @@ export const MarketStructureWidget: React.FC<Props> = ({ symbol, currentSimTime,
                     {label}
                 </div>
                 
-                {/* Direction Arrow */}
-                <div className={`col-span-3 flex items-center justify-center border-r border-white/10 ${bgColor}`}>
-                    <span className={`text-lg font-bold ${textColor}`}>{arrow}</span>
+                {/* Direction Arrow - White Background with SVG Icon */}
+                <div className="col-span-3 flex items-center justify-center border-r border-zinc-100 bg-white">
+                    {ArrowIcon}
                 </div>
                 
                 {/* Status Text */}

@@ -1,6 +1,6 @@
 
 import React, { useMemo, useState, useRef, useEffect } from 'react';
-import { AccountState, OrderStatus, Trade, TradeJournal, TimeframeType } from '../types';
+import { AccountState, OrderStatus, Trade, TradeJournal, TimeframeType, KillZoneConfig } from '../types';
 import { 
     AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, 
     BarChart, Bar, Cell, LineChart, Line, ReferenceLine
@@ -13,6 +13,7 @@ interface Props {
   currentSimTime: number;
   timePlayed: number; // Real-world seconds
   activeTimeframe: TimeframeType;
+  killZoneConfig: KillZoneConfig; // NEW PROP
   onClose: () => void;
   onUpdateTrade?: (id: string, journal: TradeJournal) => void;
 }
@@ -28,7 +29,45 @@ const MetricCard: React.FC<{ label: string; value: string; sub?: string; color?:
     </div>
 );
 
-export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentSimTime, timePlayed, activeTimeframe, onClose, onUpdateTrade }) => {
+// --- THAI TIMEZONE HELPERS ---
+const getThaiParts = (ts: number) => {
+    const date = new Date(ts * 1000);
+    // Get Hour (0-23) in Bangkok
+    const hourStr = date.toLocaleString('en-US', { timeZone: 'Asia/Bangkok', hour: 'numeric', hour12: false });
+    // Get Weekday (Sun, Mon...) in Bangkok
+    const weekdayStr = date.toLocaleString('en-US', { timeZone: 'Asia/Bangkok', weekday: 'short' });
+    
+    return {
+        hour: parseInt(hourStr === '24' ? '0' : hourStr), // Handle possible '24' edge case
+        weekday: weekdayStr
+    };
+};
+
+const formatDateThai = (ts: number | undefined) => {
+    if (!ts) return "--";
+    return new Date(ts * 1000).toLocaleString('th-TH', { 
+        timeZone: 'Asia/Bangkok',
+        day: '2-digit', month: 'short', year: '2-digit', 
+        hour: '2-digit', minute: '2-digit', hour12: false 
+    });
+};
+
+const isHourInSession = (hour: number, startStr: string, endStr: string): boolean => {
+    const start = parseInt(startStr.split(':')[0]);
+    const end = parseInt(endStr.split(':')[0]);
+    
+    if (isNaN(start) || isNaN(end)) return false;
+
+    if (start < end) {
+        // Standard range (e.g. 08:00 to 17:00)
+        return hour >= start && hour < end;
+    } else {
+        // Overnight range (e.g. 22:00 to 05:00)
+        return hour >= start || hour < end;
+    }
+};
+
+export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentSimTime, timePlayed, activeTimeframe, killZoneConfig, onClose, onUpdateTrade }) => {
   const { history: trades, balance, maxDrawdown } = account;
   
   const closedTrades = trades.filter(t => t.status === OrderStatus.CLOSED && t.entryTime !== undefined);
@@ -74,14 +113,6 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
       return parts.join(' ');
   };
 
-  const formatDate = (ts: number | undefined) => {
-      if (!ts) return "--";
-      return new Date(ts * 1000).toLocaleString('th-TH', { 
-          day: '2-digit', month: 'short', year: '2-digit', 
-          hour: '2-digit', minute: '2-digit', hour12: false 
-      });
-  };
-
   let totalRMultiple = 0;
   let countR = 0;
   closedTrades.forEach(t => {
@@ -111,27 +142,41 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
       equityData.push({ id: i + 1, balance: runningBalance, pnl: t.pnl || 0 });
   });
 
-  // Determine Y-Axis Domain for Chart centering
   const minEquity = Math.min(...equityData.map(d => d.balance));
   const maxEquity = Math.max(...equityData.map(d => d.balance));
-  const padding = (maxEquity - minEquity) * 0.1 || (maxEquity * 0.01); // 10% padding or 1% if flat
+  const padding = (maxEquity - minEquity) * 0.1 || (maxEquity * 0.01);
   const domainMin = minEquity - padding;
   const domainMax = maxEquity + padding;
 
-  const getHour = (ts: number) => new Date(ts * 1000).getHours();
-  const getDay = (ts: number) => new Date(ts * 1000).getDay(); 
-  const sessionData = [{ name: 'Asia', pnl: 0, count: 0, color: '#fcd34d' }, { name: 'London', pnl: 0, count: 0, color: '#3b82f6' }, { name: 'New York', pnl: 0, count: 0, color: '#a855f7' }];
+  // DYNAMIC SESSION CONFIGURATION
+  const sessionData = [
+      { name: killZoneConfig.asian.label, pnl: 0, count: 0, color: killZoneConfig.asian.color, key: 'asian' }, 
+      { name: killZoneConfig.london.label, pnl: 0, count: 0, color: killZoneConfig.london.color, key: 'london' }, 
+      { name: killZoneConfig.ny.label, pnl: 0, count: 0, color: killZoneConfig.ny.color, key: 'ny' }
+  ];
+  
   const dayData = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => ({ name: d, pnl: 0, count: 0 }));
 
   closedTrades.forEach(t => {
       if (!t.entryTime) return;
-      const h = getHour(t.entryTime);
-      const d = getDay(t.entryTime);
-      dayData[d].pnl += (t.pnl || 0);
-      dayData[d].count++;
-      if (h >= 22 || h < 7) { sessionData[0].pnl += (t.pnl || 0); sessionData[0].count++; }
-      else if (h >= 7 && h < 13) { sessionData[1].pnl += (t.pnl || 0); sessionData[1].count++; }
-      else { sessionData[2].pnl += (t.pnl || 0); sessionData[2].count++; }
+      const { hour, weekday } = getThaiParts(t.entryTime);
+      
+      const dayIndex = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(weekday);
+      if (dayIndex !== -1) {
+          dayData[dayIndex].pnl += (t.pnl || 0);
+          dayData[dayIndex].count++;
+      }
+
+      // CHECK SESSIONS BASED ON CONFIG
+      // Priority Logic: Asia -> London -> NY (Matches array order)
+      // This handles overlaps by assigning to the first match in the list.
+      if (killZoneConfig.asian.enabled && isHourInSession(hour, killZoneConfig.asian.start, killZoneConfig.asian.end)) {
+          sessionData[0].pnl += (t.pnl || 0); sessionData[0].count++;
+      } else if (killZoneConfig.london.enabled && isHourInSession(hour, killZoneConfig.london.start, killZoneConfig.london.end)) {
+          sessionData[1].pnl += (t.pnl || 0); sessionData[1].count++;
+      } else if (killZoneConfig.ny.enabled && isHourInSession(hour, killZoneConfig.ny.start, killZoneConfig.ny.end)) {
+          sessionData[2].pnl += (t.pnl || 0); sessionData[2].count++;
+      }
   });
 
   const getCalendarCellsData = () => {
@@ -143,20 +188,26 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
       const startDayOffset = firstDay.getDay(); 
       const pnlMap: Record<string, number> = {};
       const tradeCountMap: Record<string, number> = {};
+      
       closedTrades.forEach(t => {
           if (t.closeTime) {
+              // Convert trade close time to Thai Date String for correct daily bucketing
               const d = new Date(t.closeTime * 1000);
-              const dateKey = d.toLocaleDateString('en-CA'); 
+              const dateKey = d.toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' });
               pnlMap[dateKey] = (pnlMap[dateKey] || 0) + (t.pnl || 0);
               tradeCountMap[dateKey] = (tradeCountMap[dateKey] || 0) + 1;
           }
       });
+      
       const totalSlots = 42; 
       const cells = [];
       for (let i = 0; i < totalSlots; i++) {
           const dayNumber = i - startDayOffset + 1;
           if (dayNumber > 0 && dayNumber <= daysInMonth) {
                const currentDate = new Date(year, month, dayNumber);
+               // Use local string match since we built current month locally, 
+               // but assume the user is viewing months relative to where they are roughly.
+               // Ideally, the calendar navigation should also handle TZ, but for simplicity:
                const dateKey = currentDate.toLocaleDateString('en-CA');
                const pnl = pnlMap[dateKey];
                const count = tradeCountMap[dateKey];
@@ -206,7 +257,6 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
       setIsExporting(true);
 
       setTimeout(() => {
-          // Prepare Data for HTML Template
           const chartLabels = equityData.map(d => d.id);
           const chartPoints = equityData.map(d => d.balance);
           
@@ -218,10 +268,8 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
           const dayPnLs = dayData.map(d => d.pnl);
           const dayColors = dayData.map(d => d.pnl >= 0 ? '#4ade80' : '#f87171');
 
-          // Serialize full trade data for the HTML to consume
           const tradesJson = JSON.stringify(closedTrades);
 
-          // Metrics HTML
           const metricsHtml = `
             <div class="grid grid-cols-4 gap-4 mb-6">
                 <div class="p-4 bg-white/5 rounded-xl border border-white/10">
@@ -261,7 +309,6 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
             </div>
           `;
 
-          // Avg Win/Loss Bars HTML
           const avgBarsHtml = `
             <div class="bg-black/20 rounded-xl border border-white/5 p-6 h-full flex flex-col justify-center space-y-8">
                 <div>
@@ -297,7 +344,6 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
             </head>
             <body class="p-8 max-w-[1400px] mx-auto pb-20 relative">
                 
-                <!-- Trade Detail Modal (Hidden by Default) -->
                 <div id="trade-modal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm hidden opacity-0 transition-opacity duration-200">
                     <div class="glass-panel border border-white/10 rounded-2xl shadow-2xl w-[95%] max-w-2xl max-h-[90vh] flex flex-col overflow-hidden bg-[#09090b] transform scale-95 transition-transform duration-200" id="modal-content">
                         <div class="flex items-center justify-between px-6 py-5 border-b border-white/10 bg-white/[0.02]">
@@ -326,11 +372,11 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                                     <span id="modal-exit" class="font-mono text-white text-sm"></span>
                                 </div>
                                 <div class="bg-white/5 p-3 rounded-lg">
-                                    <span class="block text-zinc-500 font-bold uppercase mb-1">Time Open</span>
+                                    <span class="block text-zinc-500 font-bold uppercase mb-1">Time Open (Thai)</span>
                                     <span id="modal-time-open" class="font-mono text-zinc-300"></span>
                                 </div>
                                 <div class="bg-white/5 p-3 rounded-lg">
-                                    <span class="block text-zinc-500 font-bold uppercase mb-1">Time Close</span>
+                                    <span class="block text-zinc-500 font-bold uppercase mb-1">Time Close (Thai)</span>
                                     <span id="modal-time-close" class="font-mono text-zinc-300"></span>
                                 </div>
                             </div>
@@ -386,7 +432,7 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
 
                 <div class="grid grid-cols-3 gap-6 mb-8">
                     <div class="glass-panel rounded-2xl p-6 border border-white/10 h-72">
-                        <h3 class="text-xs font-bold text-zinc-400 uppercase mb-4">Session Performance</h3>
+                        <h3 class="text-xs font-bold text-zinc-400 uppercase mb-4">Session Performance (Thai Time)</h3>
                         <div class="h-56 w-full"><canvas id="sessionChart"></canvas></div>
                     </div>
                     <div class="glass-panel rounded-2xl p-6 border border-white/10 h-72">
@@ -420,7 +466,6 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                 </div>
 
                 <script>
-                    // EMBEDDED DATA
                     const trades = ${tradesJson};
                     const chartLabels = ${JSON.stringify(chartLabels)};
                     const chartPoints = ${JSON.stringify(chartPoints)};
@@ -431,7 +476,6 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                     const dayPnLs = ${JSON.stringify(dayPnLs)};
                     const dayColors = ${JSON.stringify(dayColors)};
 
-                    // --- CALENDAR LOGIC ---
                     let currentDate = new Date(${currentSimTime * 1000});
 
                     function renderCalendar() {
@@ -445,13 +489,11 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                         const daysInMonth = lastDay.getDate();
                         const startDayOffset = firstDay.getDay();
 
-                        // Aggregate Data
                         const pnlMap = {};
                         const countMap = {};
                         trades.forEach(t => {
                             if (t.closeTime) {
                                 const d = new Date(t.closeTime * 1000);
-                                // Simple date check assuming consistent timezone handling (UTC vs Local might drift but okay for report)
                                 if (d.getFullYear() === year && d.getMonth() === month) {
                                     const day = d.getDate();
                                     pnlMap[day] = (pnlMap[day] || 0) + (t.pnl || 0);
@@ -500,18 +542,16 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                         renderCalendar();
                     }
 
-                    // --- TRADE LIST & MODAL LOGIC ---
                     function renderTradeList() {
                         const tbody = document.getElementById('trade-list-body');
                         let html = '';
-                        // Reverse order
                         [...trades].reverse().forEach(t => {
                             const pnl = t.pnl || 0;
                             const pnlColor = pnl >= 0 ? 'text-green-400' : 'text-red-400';
                             const sideColor = t.side === 'LONG' ? 'text-green-500' : 'text-red-500';
                             const duration = (t.closeTime && t.entryTime) ? (t.closeTime - t.entryTime) : 0;
                             
-                            const formatTime = (ts) => ts ? new Date(ts * 1000).toLocaleString() : '--';
+                            const formatTime = (ts) => ts ? new Date(ts * 1000).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' }) : '--';
                             const formatDur = (s) => {
                                 if(!s) return '--';
                                 const h = Math.floor(s/3600);
@@ -527,7 +567,7 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                                         <div class="font-bold text-zinc-300">\${t.symbol}</div>
                                         <div class="text-[10px] text-zinc-600">\${formatTime(t.entryTime)}</div>
                                     </td>
-                                    <td class="p-3 font-mono text-xs text-zinc-400">\${t.entryPrice.toFixed(5)} <span class="opacity-50">➜</span> \${t.closePrice?.toFixed(5)}</td>
+                                    <td class="p-3 font-mono text-zinc-400">\${t.entryPrice.toFixed(5)} <span class="opacity-50">➜</span> \${t.closePrice?.toFixed(5)}</td>
                                     <td class="p-3 font-mono text-xs text-zinc-400">\${formatDur(duration)}</td>
                                     <td class="p-3 font-bold text-xs text-right \${pnlColor}">$\${pnl.toLocaleString('en-US', {minimumFractionDigits: 2})}</td>
                                 </tr>
@@ -556,10 +596,9 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
 
                         document.getElementById('modal-entry').innerText = t.entryPrice.toFixed(5);
                         document.getElementById('modal-exit').innerText = t.closePrice?.toFixed(5) || '--';
-                        document.getElementById('modal-time-open').innerText = new Date(t.entryTime * 1000).toLocaleString();
-                        document.getElementById('modal-time-close').innerText = t.closeTime ? new Date(t.closeTime * 1000).toLocaleString() : '--';
+                        document.getElementById('modal-time-open').innerText = new Date(t.entryTime * 1000).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' });
+                        document.getElementById('modal-time-close').innerText = t.closeTime ? new Date(t.closeTime * 1000).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' }) : '--';
 
-                        // Tags
                         const tagsContainer = document.getElementById('modal-tags');
                         if (t.journal && t.journal.tags && t.journal.tags.length > 0) {
                             tagsContainer.innerHTML = t.journal.tags.map(tag => \`<span class="px-2 py-0.5 rounded-md bg-blue-500/10 text-blue-300 text-[10px] border border-blue-500/20">\${tag}</span>\`).join('');
@@ -567,12 +606,9 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                             tagsContainer.innerHTML = '<span class="text-zinc-600 text-xs italic">No tags</span>';
                         }
 
-                        // Notes
                         document.getElementById('modal-notes').innerText = (t.journal && t.journal.notes) ? t.journal.notes : 'No notes added.';
 
-                        // Show
                         modal.classList.remove('hidden');
-                        // Small delay for transition
                         setTimeout(() => {
                             modal.classList.remove('opacity-0');
                             content.classList.remove('scale-95');
@@ -593,11 +629,9 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                         }, 200);
                     }
 
-                    // --- INITIALIZATION ---
                     Chart.defaults.color = '#71717a';
                     Chart.defaults.font.family = 'monospace';
 
-                    // RENDER CHARTS (Existing Logic)
                     new Chart(document.getElementById('equityChart'), {
                         type: 'line',
                         data: {
@@ -684,7 +718,6 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                         }
                     });
 
-                    // Start Interactive Components
                     renderCalendar();
                     renderTradeList();
 
@@ -710,27 +743,25 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
           return;
       }
 
-      // Headers
       const headers = [
           "ID", "Symbol", "Side", "Type", 
-          "Open Time", "Close Time", 
+          "Open Time (Thai)", "Close Time (Thai)", 
           "Entry Price", "Exit Price", 
           "Stop Loss", "Take Profit", 
           "Quantity", "PnL ($)", "Duration (s)", 
           "Tags", "Notes"
       ];
 
-      // Rows
       const rows = closedTrades.map(t => {
-          const openTimeStr = t.entryTime ? new Date(t.entryTime * 1000).toISOString() : '';
-          const closeTimeStr = t.closeTime ? new Date(t.closeTime * 1000).toISOString() : '';
+          const openTimeStr = formatDateThai(t.entryTime);
+          const closeTimeStr = formatDateThai(t.closeTime);
           const duration = (t.closeTime && t.entryTime) ? (t.closeTime - t.entryTime) : 0;
           const tags = t.journal?.tags?.join(';') || '';
-          const notes = t.journal?.notes?.replace(/"/g, '""') || ''; // Escape double quotes
+          const notes = t.journal?.notes?.replace(/"/g, '""') || ''; 
 
           return [
               t.id, t.symbol, t.side, t.type,
-              openTimeStr, closeTimeStr,
+              `"${openTimeStr}"`, `"${closeTimeStr}"`,
               t.entryPrice, t.closePrice || 0,
               t.stopLoss, t.takeProfit,
               t.quantity, (t.pnl || 0).toFixed(2), duration,
@@ -769,7 +800,7 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
           <div className="flex items-center space-x-4">
               <h1 className="text-2xl font-black text-white tracking-tight uppercase">Dashboard <span className="text-blue-500">PRO</span></h1>
               <div className="h-6 w-[1px] bg-white/10"></div>
-              <span className="text-sm font-mono text-zinc-400 hidden sm:block">SESSION ANALYTICS</span>
+              <span className="text-sm font-mono text-zinc-400 hidden sm:block">SESSION ANALYTICS (THAI TIME)</span>
           </div>
           <div className="flex items-center space-x-3">
               <button onClick={handleExportCSV} className="flex items-center space-x-2 px-5 py-2.5 bg-green-600 hover:bg-green-500 text-white rounded-xl text-xs font-bold uppercase transition-colors shadow-lg shadow-green-900/20">
@@ -860,7 +891,7 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
             {/* PERFORMANCE BREAKDOWN */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div className="glass-panel rounded-2xl p-6 h-72 bg-white/[0.02]">
-                    <h3 className="text-xs font-bold text-zinc-400 uppercase mb-4">Session</h3>
+                    <h3 className="text-xs font-bold text-zinc-400 uppercase mb-4">Session (Thai Time)</h3>
                     <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={sessionData}>
                             <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
@@ -871,7 +902,7 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                     </ResponsiveContainer>
                 </div>
                 <div className="glass-panel rounded-2xl p-6 h-72 bg-white/[0.02]">
-                    <h3 className="text-xs font-bold text-zinc-400 uppercase mb-4">Day of Week</h3>
+                    <h3 className="text-xs font-bold text-zinc-400 uppercase mb-4">Day of Week (Thai)</h3>
                     <ResponsiveContainer width="100%" height="100%">
                          <BarChart data={dayData}>
                             <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
@@ -898,7 +929,7 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
             {/* TRADE JOURNAL LIST */}
             <div className="glass-panel rounded-2xl overflow-hidden bg-white/[0.02] border border-white/5">
                 <div className="p-5 border-b border-white/5 bg-white/5 flex justify-between items-center">
-                    <h3 className="text-sm font-bold text-zinc-300 uppercase">Trade Journal</h3>
+                    <h3 className="text-sm font-bold text-zinc-300 uppercase">Trade History</h3>
                     <span className="text-xs text-zinc-500">Click row to edit</span>
                 </div>
                 <div className="overflow-x-auto w-full">
@@ -907,7 +938,7 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                             <tr className="border-b border-white/5 text-[11px] uppercase text-zinc-500 font-bold bg-black/20">
                                 <th className="p-4">#</th>
                                 <th className="p-4">Type</th>
-                                <th className="p-4">Time (Open/Close)</th>
+                                <th className="p-4">Time (Thai)</th>
                                 <th className="p-4">Entry/Exit</th>
                                 <th className="p-4">Duration</th>
                                 <th className="p-4">R:R (Real / Plan)</th>
@@ -918,9 +949,6 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                         <tbody className="text-sm font-mono">
                             {closedTrades.slice().reverse().map((t, idx) => {
                                 const duration = (t.closeTime && t.entryTime) ? (t.closeTime - t.entryTime) : 0;
-                                
-                                // UPDATED: Detailed R:R Calculation
-                                // Fallback: Use current stopLoss if initialStopLoss is 0 (entry without SL)
                                 const effectiveSL = (t.initialStopLoss && t.initialStopLoss > 0) ? t.initialStopLoss : t.stopLoss;
                                 const riskDist = effectiveSL > 0 ? Math.abs(t.entryPrice - effectiveSL) : 0;
                                 
@@ -928,14 +956,11 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                                 const isBreakEven = (t.pnl || 0) === 0;
                                 
                                 if (riskDist > 0 && t.closePrice && !isBreakEven) {
-                                    // Calculate Price Move based on Direction
                                     let priceMove = t.closePrice - t.entryPrice;
                                     if (t.side === 'SHORT') priceMove = -priceMove;
-                                    
                                     const realizedR = priceMove / riskDist;
                                     const isWin = realizedR >= 0;
                                     
-                                    // Planned R:R (Target)
                                     let plannedRRStr = "";
                                     if (t.takeProfit > 0) {
                                         const rewardDist = Math.abs(t.takeProfit - t.entryPrice);
@@ -972,8 +997,8 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                                         </td>
                                         <td className="p-4">
                                             <div className="flex flex-col text-xs font-mono font-medium text-zinc-300">
-                                                <span>{formatDate(t.entryTime)}</span>
-                                                <span className="text-zinc-500">{formatDate(t.closeTime)}</span>
+                                                <span>{formatDateThai(t.entryTime)}</span>
+                                                <span className="text-zinc-500">{formatDateThai(t.closeTime)}</span>
                                             </div>
                                         </td>
                                         <td className="p-4 text-zinc-400">

@@ -153,6 +153,8 @@ export interface DrawingObject {
     riskAmount?: number;
     // For Kill Zone
     killZoneConfig?: KillZoneConfig;
+    // For Multi-Pane support
+    pane?: string; // 'MAIN' | 'RSI' | 'MACD' etc.
 }
 
 // Updated SymbolType to match Supabase folders
