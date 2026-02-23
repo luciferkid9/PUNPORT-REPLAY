@@ -76,6 +76,10 @@ const App: React.FC = () => {
   const [showStats, setShowStats] = useState<boolean>(false);
   const [allDrawings, setAllDrawings] = useState<DrawingObject[]>([]);
   const [currentRealTimePrice, setCurrentRealTimePrice] = useState<number>(0);
+  const lastKnownPriceRef = useRef<number>(0);
+  useEffect(() => {
+      lastKnownPriceRef.current = currentRealTimePrice;
+  }, [currentRealTimePrice]);
   const [dataVersion, setDataVersion] = useState(0);
 
   // Dragging State for Trade Lines
@@ -318,37 +322,12 @@ const App: React.FC = () => {
                  if (activeCandle) {
                      const candleEndTime = activeCandle.time + tfSecs;
                      if (simTime < candleEndTime - 1) {
-                         try {
-                             // Fetch granular data (increased limit to 1500 to cover large TFs like D1)
-                             const granularData = await fetchContextCandles(activeSymbol, 'M2', simTime + 1, 1500, controller.signal); 
-                             const relevant = granularData.filter(c => c.time >= activeCandle.time && c.time <= simTime);
-                             
-                             if (relevant.length > 0) {
-                                 // REALISTIC CANDLE RECONSTRUCTION
-                                 let open = activeCandle.open; // Use TF Open to keep structure
-                                 let close = relevant[relevant.length - 1].close;
-                                 let high = open;
-                                 let low = open;
-                                 let volume = 0;
-                                 
-                                 relevant.forEach(c => {
-                                     if (c.high > high) high = c.high;
-                                     if (c.low < low) low = c.low;
-                                     if (c.close > high) high = c.close; // Ensure bounds
-                                     if (c.close < low) low = c.close;
-                                     volume += c.volume || 0;
-                                 });
-                                 finalVisible[newIndex] = { time: activeCandle.time, open, high, low, close, volume };
-                                 setCurrentRealTimePrice(close);
-                             } else { 
-                                 // If no granular data yet, default to open (start of candle)
-                                 finalVisible[newIndex] = { ...activeCandle, high: activeCandle.open, low: activeCandle.open, close: activeCandle.open, volume: 0 };
-                                 setCurrentRealTimePrice(activeCandle.open); 
-                             }
-                         } catch (err) { 
-                             setCurrentRealTimePrice(activeCandle.open);
-                             finalVisible[newIndex] = { ...activeCandle, high: activeCandle.open, low: activeCandle.open, close: activeCandle.open };
-                         }
+                         let open = activeCandle.open;
+                         let close = lastKnownPriceRef.current || open;
+                         let high = Math.max(open, close);
+                         let low = Math.min(open, close);
+                         finalVisible[newIndex] = { ...activeCandle, open, high, low, close };
+                         setCurrentRealTimePrice(close);
                      } else { 
                          setCurrentRealTimePrice(activeCandle.close); 
                      }
@@ -780,7 +759,17 @@ const App: React.FC = () => {
         onSymbolChange={handleSymbolChange} onTimeframeChange={setActiveTimeframe} onPlayPause={() => setSimState(s => ({...s, isPlaying: !s.isPlaying}))} onNext={handleStep} onSpeedChange={(v) => setSimState(s => ({...s, speed: v}))} onJumpToDate={handleJumpToDate} onToggleStats={() => setShowStats(true)} onExit={handleExitProfile}
       />
       
-      {isLoading && <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"><div className="flex flex-col items-center"><div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4"></div><div className="text-blue-400 font-bold animate-pulse">Processing Data...</div></div></div>}
+      {isLoading && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
+          <div className="flex flex-col items-center">
+            <svg width="60" height="60" viewBox="0 0 50 50" fill="none" className="mb-6">
+              <path d="M5 25H15L20 10L30 40L35 25H45" stroke="#3b82f6" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="animate-[dash_1.5s_ease-in-out_infinite]" strokeDasharray="100" strokeDashoffset="100"/>
+              <style>{`@keyframes dash { 0% { stroke-dashoffset: 100; opacity: 0; } 50% { stroke-dashoffset: 0; opacity: 1; } 100% { stroke-dashoffset: -100; opacity: 0; } }`}</style>
+            </svg>
+            <div className="text-zinc-400 text-xs tracking-[0.2em] uppercase font-light animate-pulse">Initializing Workspace</div>
+          </div>
+        </div>
+      )}
       
       {showDataError && !isLoading && (
           <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/70 backdrop-blur-sm animate-in fade-in zoom-in-95 duration-200">
@@ -813,35 +802,35 @@ const App: React.FC = () => {
                     className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200 group relative ${activeTool === 'CURSOR' ? 'bg-blue-500/20 text-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.2)] ring-1 ring-blue-500/50' : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'}`} 
                     title="Cursor"
                 >
-                    <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5" /></svg>
+                    <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.2} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5" /></svg>
                 </button>
                 <button 
                     onClick={() => { setActiveTool('TRENDLINE'); setSelectedDrawingId(null); }} 
                     className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200 group relative ${activeTool === 'TRENDLINE' ? 'bg-blue-500/20 text-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.2)] ring-1 ring-blue-500/50' : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'}`} 
                     title="Trendline"
                 >
-                    <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" /></svg>
+                    <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.2} d="M5 19L19 5M5 5h2v2H5V5zm12 12h2v2h-2v-2z" /></svg>
                 </button>
                 <button 
                     onClick={() => { setActiveTool('TEXT'); setSelectedDrawingId(null); }} 
                     className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200 group relative ${activeTool === 'TEXT' ? 'bg-blue-500/20 text-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.2)] ring-1 ring-blue-500/50' : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'}`} 
                     title="Text Box"
                 >
-                    <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 4h16M12 4v16" /></svg>
+                    <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.2} d="M4 7V5h16v2M12 5v14M9 19h6" /></svg>
                 </button>
                 <button 
                     onClick={handleAddAutoKillZone} 
                     className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200 group relative ${hasKillZone ? 'bg-blue-500/20 text-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.2)] ring-1 ring-blue-500/50' : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'}`} 
                     title="Add Kill Zone (Auto)"
                 >
-                    <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4h16v16H4V4z" /></svg>
+                    <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.2} d="M4 6a2 2 0 012-2h12a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM12 4v16M4 12h16" /></svg>
                 </button>
                 <button 
                     onClick={() => { setActiveTool('FIB'); setSelectedDrawingId(null); }} 
                     className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200 group relative ${activeTool === 'FIB' ? 'bg-blue-500/20 text-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.2)] ring-1 ring-blue-500/50' : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'}`} 
                     title="Fibonacci"
                 >
-                    <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" /></svg>
+                    <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.2} d="M4 5h16M4 9h10M4 14h14M4 19h16" /></svg>
                 </button>
              </div>
 
@@ -853,14 +842,14 @@ const App: React.FC = () => {
                     className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200 group relative ${activeTool === 'LONG_POSITION' ? 'bg-green-500/20 text-green-400 shadow-[0_0_15px_rgba(34,197,94,0.3)] ring-1 ring-green-500/50' : 'text-zinc-500 hover:text-green-400 hover:bg-white/5'}`} 
                     title="Long Position"
                  >
-                    <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 11l3-3m0 0l3 3m-3-3v8m0-13a9 9 0 110 18 9 9 0 010-18z" /></svg>
+                    <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.2} d="M12 19V5M12 5l-4 4M12 5l4 4M5 12h14" strokeDasharray="4 4"/></svg>
                 </button>
                 <button 
                     onClick={() => { setActiveTool('SHORT_POSITION'); setSelectedDrawingId(null); }} 
                     className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200 group relative ${activeTool === 'SHORT_POSITION' ? 'bg-red-500/20 text-red-400 shadow-[0_0_15px_rgba(239,68,68,0.3)] ring-1 ring-red-500/50' : 'text-zinc-500 hover:text-red-400 hover:bg-white/5'}`} 
                     title="Short Position"
                 >
-                    <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13l-3 3m0 0l-3-3m3 3V8m0 13a9 9 0 110-18 9 9 0 010 18z" /></svg>
+                    <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.2} d="M12 5v14M12 19l-4-4M12 19l4-4M5 12h14" strokeDasharray="4 4"/></svg>
                 </button>
              </div>
              
@@ -902,7 +891,7 @@ const App: React.FC = () => {
                     className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200 group relative ${showMarketStructure ? 'bg-white/10 text-white ring-1 ring-white/20' : 'text-zinc-500 hover:text-white hover:bg-white/5'}`} 
                     title="Market Structure"
                  >
-                     <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
+                     <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.2} d="M4 16l6-6 4 4 6-6M4 16v4h16v-4M4 16h16" /></svg>
                  </button>
 
                  <button 
@@ -910,14 +899,14 @@ const App: React.FC = () => {
                     className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200 group relative ${magnetMode ? 'bg-amber-500/20 text-amber-400 ring-1 ring-amber-500/50 shadow-[0_0_15px_rgba(245,158,11,0.2)]' : 'text-zinc-500 hover:text-amber-300 hover:bg-white/5'}`} 
                     title="Magnet Mode"
                  >
-                     <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101" /></svg>
+                     <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.2} d="M5 9a7 7 0 1114 0v4h-4V9a3 3 0 00-6 0v4H5V9zM5 17h4v2H5v-2zm10 0h4v2h-4v-2z" /></svg>
                  </button>
                  <button 
                     onClick={() => setShowDrawingManager(!showDrawingManager)} 
                     className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200 group relative ${showDrawingManager ? 'bg-white/10 text-white ring-1 ring-white/20' : 'text-zinc-500 hover:text-white hover:bg-white/5'}`} 
                     title="Layers"
                  >
-                     <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" /></svg>
+                     <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.2} d="M12 4L4 8l8 4 8-4-8-4zM4 12l8 4 8-4M4 16l8 4 8-4" /></svg>
                  </button>
              </div>
 

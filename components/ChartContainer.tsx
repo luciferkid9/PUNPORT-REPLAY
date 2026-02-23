@@ -81,6 +81,8 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
 
   const [indicatorValues, setIndicatorValues] = useState<Record<string, any>>({});
 
+  const isSyncingRef = useRef<boolean>(false);
+
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   
@@ -510,6 +512,16 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
     });
     candleSeriesRef.current = candleSeries;
     chartRef.current = chart;
+    
+    chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+        if (!range || isSyncingRef.current) return;
+        isSyncingRef.current = true;
+        indicatorChartRefs.current.forEach((indChart) => {
+            indChart.timeScale().setVisibleLogicalRange(range);
+        });
+        isSyncingRef.current = false;
+    });
+
     if (dataRef.current.length > 0) candleSeries.setData(dataRef.current as any);
     entryLinesRef.current.clear();
     
@@ -630,12 +642,23 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                 width: container.clientWidth, height: container.clientHeight
              });
              indicatorChartRefs.current.set(type, chart);
+             
+             chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+                 if (!range || isSyncingRef.current) return;
+                 isSyncingRef.current = true;
+                 if (chartRef.current) {
+                     chartRef.current.timeScale().setVisibleLogicalRange(range);
+                 }
+                 indicatorChartRefs.current.forEach((otherChart, otherType) => {
+                     if (otherType !== type) {
+                         otherChart.timeScale().setVisibleLogicalRange(range);
+                     }
+                 });
+                 isSyncingRef.current = false;
+             });
+
              const main = chartRef.current;
              if (main) {
-                 const syncToMain = (range: LogicalRange | null) => { if (range && chart) chart.timeScale().setVisibleLogicalRange(range); };
-                 const syncFromMain = (range: LogicalRange | null) => { if (range && main) main.timeScale().setVisibleLogicalRange(range); };
-                 main.timeScale().subscribeVisibleLogicalRangeChange(syncToMain);
-                 chart.timeScale().subscribeVisibleLogicalRangeChange(syncFromMain);
                  const range = main.timeScale().getVisibleLogicalRange();
                  if (range) chart.timeScale().setVisibleLogicalRange(range);
              }
