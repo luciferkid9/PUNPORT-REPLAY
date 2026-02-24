@@ -1,54 +1,22 @@
-
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { INITIAL_BALANCE, SYMBOL_CONFIG, getContractSize, TF_SECONDS, DEFAULT_LEVERAGE, STOP_OUT_LEVEL } from './constants';
-import { AccountState, SimulationState, OrderSide, OrderType, Trade, OrderStatus, ToolType, DrawingObject, IndicatorConfig, IndicatorType, DrawingSettings, SymbolType, TimeframeType, Candle, TraderProfile, TradeJournal, KillZoneConfig, DragTradeUpdate, FibLevel } from './types';
+import React, { useState, useEffect, useRef } from 'react';
+import { TF_SECONDS } from './constants';
+import { SymbolType, TimeframeType, TraderProfile, DragTradeUpdate } from './types';
 import { ChartContainer, ChartRef } from './components/ChartContainer';
 import { AccountDashboard } from './components/AccountDashboard';
 import { OrderPanel } from './components/OrderPanel';
-import { AnalyticsPanel } from './components/AnalyticsPanel';
 import { DrawingManager } from './components/DrawingManager';
 import { DrawingSettingsModal } from './components/DrawingSettingsModal';
 import { ChallengeSetupModal } from './components/ChallengeSetupModal';
 import { DetailedStats } from './components/DetailedStats';
 import { MarketStructureWidget } from './components/MarketStructureWidget';
 import { IndicatorSettingsModal } from './components/IndicatorSettingsModal';
-import { calculateSMA, calculateEMA, calculateRSI, calculateMACD, calculateRequiredMargin, calculatePnLInUSD, resampleCandles } from './services/logicEngine';
-import { fetchCandles, parseCSV, fetchHistoricalData, fetchContextCandles, fetchFutureCandles, fetchFirstCandle } from './services/api';
+import { useSimulationEngine } from './hooks/useSimulationEngine';
+import { useTradingLogic } from './hooks/useTradingLogic';
+import { useDrawingsAndTools } from './hooks/useDrawingsAndTools';
 
-const STORAGE_KEY = 'protrade_profiles_v2'; 
-
-// CONSTANTS FOR DATA BUFFERING
-const VISIBLE_CANDLES = 1000;
-const WARMUP_BUFFER = 500; 
-const MIN_WARMUP = 200;
-
-const DEFAULT_KILLZONE_CONFIG: KillZoneConfig = {
-    asian: { enabled: true, label: 'Asian', color: '#e91e63', start: '06:00', end: '11:00' }, 
-    london: { enabled: true, label: 'London', color: '#00bcd4', start: '14:00', end: '17:00' },
-    ny: { enabled: true, label: 'New York', color: '#ff5d00', start: '19:00', end: '04:00' },
-    showHighLowLines: false,
-    showAverage: false,     
-    extend: false,
-    showLabel: true,        
-    opacity: 0.15           
-};
-
-// ADDED: 0.886 Level to default configuration
-const DEFAULT_FIB_LEVELS: FibLevel[] = [
-    { level: 0, color: '#94a3b8', visible: true },
-    { level: 0.236, color: '#ef4444', visible: false }, 
-    { level: 0.382, color: '#ef4444', visible: true },
-    { level: 0.5, color: '#22c55e', visible: true },
-    { level: 0.618, color: '#eab308', visible: true },
-    { level: 0.786, color: '#3b82f6', visible: true },
-    { level: 0.886, color: '#6366f1', visible: true }, // Added 0.886
-    { level: 1, color: '#a1a1aa', visible: true },
-    { level: 1.272, color: '#f87171', visible: true },
-    { level: 1.618, color: '#a855f7', visible: true }, 
-];
+const STORAGE_KEY = 'protrade_profiles_v2';
 
 const App: React.FC = () => {
-  // --- STATE ---
   const [profiles, setProfiles] = useState<TraderProfile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
   const [activeProfile, setActiveProfile] = useState<TraderProfile | null>(null);
@@ -56,80 +24,83 @@ const App: React.FC = () => {
   const [activeSymbol, setActiveSymbol] = useState<SymbolType>('EURUSD');
   const [activeTimeframe, setActiveTimeframe] = useState<TimeframeType>('H1');
   
-  const [chartData, setChartData] = useState<Candle[]>([]);
-  
-  const chartDataRef = useRef<Candle[]>([]);
-  useEffect(() => { chartDataRef.current = chartData; }, [chartData]);
-  
-  const warmupDataRef = useRef<Candle[]>([]);
-  const isSwitchingTfRef = useRef<boolean>(false);
-
-  const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [isLoadingHistory, setIsLoadingHistory] = useState<boolean>(false); 
-  const [isLoadingFuture, setIsLoadingFuture] = useState<boolean>(false); 
-  const [showDataError, setShowDataError] = useState<boolean>(false); 
-  
-  const [simState, setSimState] = useState<SimulationState>({ isPlaying: false, speed: 500, currentIndex: 0, maxIndex: 0 });
-  const [currentSimTime, setCurrentSimTime] = useState<number>(0);
-
-  const [account, setAccount] = useState<AccountState>({ balance: INITIAL_BALANCE, equity: INITIAL_BALANCE, maxEquity: INITIAL_BALANCE, maxDrawdown: 0, history: [] });
   const [showStats, setShowStats] = useState<boolean>(false);
-  const [allDrawings, setAllDrawings] = useState<DrawingObject[]>([]);
-  const [currentRealTimePrice, setCurrentRealTimePrice] = useState<number>(0);
-  const lastKnownPriceRef = useRef<number>(0);
-  useEffect(() => {
-      lastKnownPriceRef.current = currentRealTimePrice;
-  }, [currentRealTimePrice]);
-  const [dataVersion, setDataVersion] = useState(0);
-
-  // Dragging State for Trade Lines
   const [activeDragTrade, setActiveDragTrade] = useState<DragTradeUpdate | null>(null);
+  const [showMarketStructure, setShowMarketStructure] = useState<boolean>(false);
 
   const chartRef = useRef<ChartRef>(null);
-  const [activeTool, setActiveTool] = useState<ToolType>('CURSOR');
-  const [magnetMode, setMagnetMode] = useState<boolean>(false);
-  const [selectedDrawingId, setSelectedDrawingId] = useState<string | null>(null);
-  const [editingDrawingId, setEditingDrawingId] = useState<string | null>(null);
-  const [showMarketStructure, setShowMarketStructure] = useState<boolean>(false);
-  const [showDrawingManager, setShowDrawingManager] = useState<boolean>(false);
-  const [drawingSettings, setDrawingSettings] = useState<DrawingSettings>({ 
-      color: '#3b82f6', 
-      lineWidth: 2, 
-      lineStyle: 'solid' 
-  });
 
-  // State to hold the current Fib Levels preference (persists through session)
-  const [currentFibLevels, setCurrentFibLevels] = useState<FibLevel[]>(DEFAULT_FIB_LEVELS);
+  const {
+      chartData,
+      warmupDataRef,
+      isLoading,
+      setIsLoading,
+      showDataError,
+      setShowDataError,
+      simState,
+      setSimState,
+      currentSimTime,
+      setCurrentSimTime,
+      currentSlice,
+      tradingPrice,
+      lastTime,
+      currentDigits,
+      handleSymbolChange: engineHandleSymbolChange,
+      handleJumpToDate,
+      handleJumpToFirstData,
+      handleLoadMoreHistory,
+      handleStep,
+      resetSimulation
+  } = useSimulationEngine(activeSymbol, activeTimeframe, activeProfileId, activeProfile, chartRef);
 
-  const currentSlice = useMemo(() => {
-      if (chartData.length === 0) return [];
-      return chartData.slice(0, Math.min(simState.currentIndex + 1, chartData.length));
-  }, [chartData, simState.currentIndex]);
+  const {
+      account,
+      setAccount,
+      handleModifyTrade,
+      handleModifyOrderEntry,
+      handleUpdateTrade,
+      handleCloseOrder,
+      handlePlaceOrder,
+      resetAccount
+  } = useTradingLogic(activeSymbol, currentSimTime, tradingPrice, currentSlice, simState, setSimState);
 
-  const tradingPrice = useMemo(() => {
-      return currentSlice.length > 0 ? currentSlice[currentSlice.length - 1].close : 0;
-  }, [currentSlice]);
+  const {
+      allDrawings,
+      setAllDrawings,
+      activeTool,
+      setActiveTool,
+      magnetMode,
+      setMagnetMode,
+      selectedDrawingId,
+      setSelectedDrawingId,
+      editingDrawingId,
+      setEditingDrawingId,
+      showDrawingManager,
+      setShowDrawingManager,
+      drawingSettings,
+      setDrawingSettings,
+      currentDrawings,
+      hasKillZone,
+      activeKillZoneConfig,
+      indicatorConfigs,
+      editingIndicator,
+      setEditingIndicator,
+      rsiData,
+      macdData,
+      showIndicatorMenu,
+      setShowIndicatorMenu,
+      slicedEmaMap,
+      toggleIndicator,
+      handleRemoveIndicator,
+      handleIndicatorUpdate,
+      handleAddIndicator,
+      handleAddAutoKillZone,
+      handleDrawingCreate,
+      handleDrawingUpdate,
+      handleDrawingDelete,
+      resetDrawings
+  } = useDrawingsAndTools(activeSymbol, currentSimTime, tradingPrice, chartData, warmupDataRef, lastTime);
 
-  const lastTime = useMemo(() => {
-      return currentSlice.length > 0 ? currentSlice[currentSlice.length - 1].time : 0;
-  }, [currentSlice]);
-
-  const currentDrawings = useMemo(() => {
-      return allDrawings.filter(d => d.symbol === activeSymbol);
-  }, [allDrawings, activeSymbol]);
-
-  // Check if Kill Zone exists
-  const hasKillZone = useMemo(() => {
-      return currentDrawings.some(d => d.type === 'KILLZONE');
-  }, [currentDrawings]);
-
-  // Determine active KillZone Config for Dashboard
-  const activeKillZoneConfig = useMemo(() => {
-      const kz = currentDrawings.find(d => d.type === 'KILLZONE');
-      return kz?.killZoneConfig || DEFAULT_KILLZONE_CONFIG;
-  }, [currentDrawings]);
-
-  // 1. INIT & PERSISTENCE
   const isLoadedRef = useRef(false);
 
   useEffect(() => {
@@ -143,7 +114,7 @@ const App: React.FC = () => {
     }
     isLoadedRef.current = true;
     setIsLoading(false);
-  }, []);
+  }, [setIsLoading]);
 
   useEffect(() => { 
       if (isLoadedRef.current) {
@@ -181,7 +152,6 @@ const App: React.FC = () => {
       return () => clearInterval(interval);
   }, [activeProfileId]);
 
-  // ... (Rest of Handlers) ...
   const handleCreateProfile = (name: string, balance: number, symbols: SymbolType[], startDate: number, endDate: number, timeframe: TimeframeType = 'H1', customDigits?: number) => {
       const newProfile: TraderProfile = {
           id: Math.random().toString(36).substr(2, 9), name, createdAt: Date.now(), lastPlayed: Date.now(),
@@ -198,17 +168,14 @@ const App: React.FC = () => {
   const handleSelectProfile = (profile: TraderProfile) => {
       setAccount(profile.account); setActiveSymbol(profile.activeSymbol); setActiveTimeframe(profile.activeTimeframe);
       setCurrentSimTime(profile.currentSimTime); setActiveProfileId(profile.id); setActiveProfile(profile);
-      setAllDrawings(profile.drawings || []); setChartData([]);
-      warmupDataRef.current = [];
-      setShowDataError(false);
+      setAllDrawings(profile.drawings || []); 
+      resetSimulation();
       setIsLoading(true); 
   };
 
-  const handleSymbolChange = (newSymbol: SymbolType) => {
-      setActiveSymbol(newSymbol); setChartData([]);
-      warmupDataRef.current = [];
-      setShowDataError(false);
-      setSimState(prev => ({ ...prev, isPlaying: false }));
+  const onSymbolChange = (newSymbol: SymbolType) => {
+      setActiveSymbol(newSymbol);
+      engineHandleSymbolChange(newSymbol);
   };
 
   const handleDeleteProfile = (id: string) => {
@@ -217,533 +184,11 @@ const App: React.FC = () => {
   };
 
   const handleExitProfile = () => {
-      setSimState(prev => ({ ...prev, isPlaying: false })); setActiveProfileId(null); setActiveProfile(null);
-      setAccount({ balance: INITIAL_BALANCE, equity: INITIAL_BALANCE, maxEquity: INITIAL_BALANCE, maxDrawdown: 0, history: [] });
-      setChartData([]); setAllDrawings([]); setShowDataError(false); warmupDataRef.current = [];
+      setActiveProfileId(null); setActiveProfile(null);
+      resetAccount();
+      resetSimulation();
+      resetDrawings();
   };
-
-  const tick = useCallback(() => {
-      setSimState(prev => {
-          const nextIndex = prev.currentIndex + 1;
-          if (nextIndex >= prev.maxIndex) {
-              return { ...prev, isPlaying: false };
-          }
-          return { ...prev, currentIndex: nextIndex };
-      });
-  }, []);
-
-  const handleJumpToDate = (dateStr: string) => {
-      const target = new Date(dateStr).getTime() / 1000;
-      if (!isNaN(target)) {
-          setSimState(prev => ({ ...prev, isPlaying: false }));
-          setCurrentSimTime(target);
-          setDataVersion(v => v + 1);
-      }
-  };
-
-  const handleJumpToFirstData = async () => {
-       setIsLoading(true);
-       setSimState(prev => ({ ...prev, isPlaying: false }));
-       setShowDataError(false);
-       try {
-           const first = await fetchFirstCandle(activeSymbol, activeTimeframe);
-           if (first) {
-               const target = first.time; 
-               setCurrentSimTime(target);
-               setDataVersion(v => v + 1);
-           }
-       } catch(e) { console.error(e); } finally { setIsLoading(false); }
-  };
-
-  useEffect(() => {
-      let interval: number;
-      if (simState.isPlaying) {
-          interval = window.setInterval(tick, simState.speed);
-      }
-      return () => clearInterval(interval);
-  }, [simState.isPlaying, simState.speed, tick]);
-
-  const getDynamicPrecision = () => {
-      if (activeProfile?.customDigits) return activeProfile.customDigits;
-      if (SYMBOL_CONFIG[activeSymbol]) return SYMBOL_CONFIG[activeSymbol].digits;
-      if (chartData.length > 0) {
-          const sample = chartData[chartData.length-1].close;
-          if (sample > 500) return 2; 
-          if (sample > 20) return 3;  
-          return 5;
-      }
-      return 5;
-  };
-  const currentDigits = getDynamicPrecision();
-
-  // --- DATA LOADING & BUFFERING ---
-  useEffect(() => {
-     if (!activeSymbol || !activeProfileId || !activeProfile) return;
-     const controller = new AbortController();
-     
-     const loadInitialData = async () => {
-         isSwitchingTfRef.current = true;
-         setIsLoading(true); setShowDataError(false); 
-         try {
-             const simTime = currentSimTime > 0 ? currentSimTime : activeProfile.startDate;
-             const startSession = activeProfile.startDate;
-             const tfSecs = TF_SECONDS[activeTimeframe] || 60;
-             const alignedTime = Math.floor(simTime / tfSecs) * tfSecs;
-
-             const totalContextNeeded = VISIBLE_CANDLES + WARMUP_BUFFER;
-             const context = await fetchContextCandles(activeSymbol, activeTimeframe, alignedTime + tfSecs, totalContextNeeded, controller.signal);
-             const future = await fetchFutureCandles(activeSymbol, activeTimeframe, alignedTime, VISIBLE_CANDLES, controller.signal);
-             
-             if (controller.signal.aborted) return;
-
-             if (future.length > 0 || context.length > 0) {
-                 const validHistory = context.filter(c => c.time >= startSession);
-                 let finalWarmup = context.filter(c => c.time < startSession);
-                 if (finalWarmup.length < MIN_WARMUP) {
-                     const first = context.length > 0 ? context[0] : (future.length > 0 ? future[0] : null);
-                     if (first) {
-                         const paddingCount = MIN_WARMUP - finalWarmup.length;
-                         const padding = Array(paddingCount).fill(null).map((_, i) => ({ ...first, time: first.time - ((paddingCount - i) * tfSecs) }));
-                         finalWarmup = [...padding, ...finalWarmup];
-                     }
-                 }
-                 const visibleMap = new Map<number, Candle>();
-                 validHistory.forEach(c => visibleMap.set(c.time, c));
-                 future.forEach(c => visibleMap.set(c.time, c));
-                 
-                 const finalVisible = Array.from(visibleMap.values()).sort((a, b) => a.time - b.time);
-                 let newIndex = 0;
-                 if (finalVisible.length > 0) {
-                     for (let i = finalVisible.length - 1; i >= 0; i--) {
-                         if (finalVisible[i].time <= simTime) { newIndex = i; break; }
-                     }
-                 }
-                 const activeCandle = finalVisible[newIndex];
-                 if (activeCandle) {
-                     const candleEndTime = activeCandle.time + tfSecs;
-                     if (simTime < candleEndTime - 1) {
-                         let open = activeCandle.open;
-                         let close = lastKnownPriceRef.current || open;
-                         let high = Math.max(open, close);
-                         let low = Math.min(open, close);
-                         finalVisible[newIndex] = { ...activeCandle, open, high, low, close };
-                         setCurrentRealTimePrice(close);
-                     } else { 
-                         setCurrentRealTimePrice(activeCandle.close); 
-                     }
-                 }
-                 warmupDataRef.current = finalWarmup;
-                 setChartData(finalVisible);
-                 setSimState(prev => ({ ...prev, currentIndex: newIndex, maxIndex: finalVisible.length }));
-                 setTimeout(() => { if (!controller.signal.aborted) { chartRef.current?.fitContent(); isSwitchingTfRef.current = false; } }, 50);
-             } else {
-                 if (context.length === 0 && future.length === 0) {
-                      const firstCandle = await fetchFirstCandle(activeSymbol, activeTimeframe, controller.signal);
-                      if (firstCandle) {
-                          const absoluteFuture = await fetchFutureCandles(activeSymbol, activeTimeframe, firstCandle.time - 1, VISIBLE_CANDLES, controller.signal);
-                          if (absoluteFuture.length > 0) {
-                              const f = absoluteFuture[0];
-                              const fake = Array(MIN_WARMUP).fill(null).map((_, i) => ({ ...f, time: f.time - ((MIN_WARMUP - i) * tfSecs) }));
-                              warmupDataRef.current = fake;
-                              setChartData(absoluteFuture);
-                              setSimState(prev => ({ ...prev, currentIndex: 0, maxIndex: absoluteFuture.length }));
-                              setCurrentSimTime(absoluteFuture[0].time + tfSecs);
-                              setTimeout(() => { if (!controller.signal.aborted) { chartRef.current?.fitContent(); isSwitchingTfRef.current = false; } }, 100);
-                              setIsLoading(false);
-                              return;
-                          }
-                      }
-                 }
-                 setChartData([]); setShowDataError(true);
-             }
-         } catch (e) { console.error(e); setChartData([]); setShowDataError(true); } finally { if (!controller.signal.aborted) setIsLoading(false); }
-     };
-     loadInitialData();
-     return () => { controller.abort(); isSwitchingTfRef.current = false; };
-  }, [activeSymbol, activeTimeframe, activeProfileId, dataVersion]); 
-
-  // Stream Buffering
-  useEffect(() => {
-      if (!chartData.length || isLoadingFuture) return;
-      const bufferThreshold = 50; 
-      const remaining = chartData.length - 1 - simState.currentIndex;
-      if (remaining < bufferThreshold) {
-          const loadFuture = async () => {
-              setIsLoadingFuture(true);
-              const lastCandle = chartData[chartData.length - 1];
-              const lastTime = lastCandle.time;
-              const moreData = await fetchFutureCandles(activeSymbol, activeTimeframe, lastTime, 100);
-              if (moreData.length > 0) {
-                  setChartData(prev => {
-                       if (prev.length === 0) return moreData;
-                       const lastPrevTime = prev[prev.length - 1].time;
-                       const newUnique = moreData.filter(c => c.time > lastPrevTime);
-                       if (newUnique.length === 0) return prev;
-                       return [...prev, ...newUnique];
-                  });
-              }
-              setIsLoadingFuture(false);
-          };
-          loadFuture();
-      }
-  }, [simState.currentIndex, chartData, activeSymbol, activeTimeframe, isLoadingFuture]);
-
-  useEffect(() => {
-     setSimState(prev => {
-         if (prev.maxIndex !== chartData.length) {
-             return { ...prev, maxIndex: chartData.length };
-         }
-         return prev;
-     });
-  }, [chartData.length]);
-
-  const handleLoadMoreHistory = async () => {
-      if (isLoadingHistory || chartData.length === 0) return;
-      setIsLoadingHistory(true);
-      const oldestTime = warmupDataRef.current.length > 0 ? warmupDataRef.current[0].time : chartData[0].time;
-      const totalToFetch = 500 + WARMUP_BUFFER; 
-      const rawData = await fetchHistoricalData(activeSymbol, activeTimeframe, oldestTime, totalToFetch); 
-      if (rawData.length > 0) {
-          if (rawData.length > WARMUP_BUFFER) {
-              const newWarmup = rawData.slice(0, WARMUP_BUFFER);
-              const newVisible = rawData.slice(WARMUP_BUFFER);
-              const oldWarmup = warmupDataRef.current;
-              warmupDataRef.current = newWarmup;
-              setChartData(prev => [...newVisible, ...oldWarmup, ...prev]);
-              setSimState(prev => ({ ...prev, currentIndex: prev.currentIndex + newVisible.length + oldWarmup.length, maxIndex: prev.maxIndex + newVisible.length + oldWarmup.length }));
-          } else {
-              const oldWarmup = warmupDataRef.current;
-              const first = rawData[0];
-              const tfSecs = TF_SECONDS[activeTimeframe] || 60;
-              const fake = Array(MIN_WARMUP).fill(null).map((_, i) => ({ ...first, time: first.time - ((MIN_WARMUP - i) * tfSecs) }));
-              warmupDataRef.current = fake;
-              setChartData(prev => [...rawData, ...oldWarmup, ...prev]);
-              setSimState(prev => ({ ...prev, currentIndex: prev.currentIndex + rawData.length + oldWarmup.length, maxIndex: prev.maxIndex + rawData.length + oldWarmup.length }));
-          }
-      }
-      setIsLoadingHistory(false);
-  };
-
-  // --- SYNC ENGINE ---
-  useEffect(() => {
-      if (chartData.length > 0 && chartData[simState.currentIndex]) {
-          const chartCandle = chartData[simState.currentIndex];
-          setCurrentRealTimePrice(chartCandle.close);
-          if (!isSwitchingTfRef.current && !isLoading) {
-              if (simState.isPlaying) {
-                  const duration = TF_SECONDS[activeTimeframe] || 60;
-                  setCurrentSimTime(chartCandle.time + duration);
-              }
-          }
-      }
-  }, [simState.currentIndex, chartData, activeTimeframe, simState.isPlaying, isLoading]);
-
-  const handleStep = () => {
-      const candles = chartDataRef.current;
-      const prevIndex = simState.currentIndex;
-      const maxIndex = simState.maxIndex;
-
-      if (!candles || prevIndex + 1 >= maxIndex) return;
-
-      const nextIndex = prevIndex + 1;
-      const nextCandle = candles[nextIndex];
-
-      // 1. Advance Index
-      setSimState(prev => ({ ...prev, currentIndex: nextIndex }));
-
-      // 2. Explicitly Advance Time so switching TFs aligns correctly
-      if (nextCandle) {
-          const duration = TF_SECONDS[activeTimeframe] || 60;
-          setCurrentSimTime(nextCandle.time + duration);
-      }
-  };
-
-  // ... (Indicators) ...
-  const [indicatorConfigs, setIndicatorConfigs] = useState<IndicatorConfig[]>([
-      { id: 'default-macd', type: 'MACD', visible: true, fastLength: 12, slowLength: 26, signalLength: 9, color: '#2962ff', signalColor: '#f57c00', histogramColor: undefined },
-      { id: 'default-rsi', type: 'RSI', visible: true, period: 14, upperLevel: 70, lowerLevel: 30, color: '#7e57c2' }, // Visible by default
-      { id: 'default-ema', type: 'EMA', visible: false, period: 14, color: '#2962ff' } // Changed SMA to EMA
-  ]);
-  const [editingIndicator, setEditingIndicator] = useState<IndicatorConfig | null>(null);
-  
-  // EMA Data Map for multiple lines
-  const [emaDataMap, setEmaDataMap] = useState<Map<string, { time: number; value: number }[]>>(new Map());
-  
-  const [rsiData, setRsiData] = useState<{ time: number; value: number }[]>([]);
-  const [macdData, setMacdData] = useState<{ macd: any[], signal: any[], histogram: any[] }>({ macd: [], signal: [], histogram: [] });
-  const [showIndicatorMenu, setShowIndicatorMenu] = useState<boolean>(false);
-  const indicatorMenuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-      const handleClickOutside = (event: MouseEvent) => {
-          if (indicatorMenuRef.current && !indicatorMenuRef.current.contains(event.target as Node)) {
-              setShowIndicatorMenu(false);
-          }
-      };
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  useEffect(() => {
-      if (chartData.length === 0) return;
-      const rawFull = [...warmupDataRef.current, ...chartData];
-      const fullSeries = rawFull.filter((v, i, a) => i === 0 || v.time > a[i - 1].time);
-      const visibleStartTime = chartData[0].time;
-
-      // Calculate Data for ALL visible EMAs
-      const newEmaMap = new Map<string, { time: number; value: number }[]>();
-      indicatorConfigs.filter(c => c.type === 'EMA' && c.visible).forEach(config => {
-          const rawEma = calculateEMA(fullSeries, config.period || 14);
-          newEmaMap.set(config.id, rawEma.filter(d => d.time >= visibleStartTime));
-      });
-      setEmaDataMap(newEmaMap);
-
-      const rsiConfig = indicatorConfigs.find(c => c.type === 'RSI');
-      if (rsiConfig?.visible) {
-          const rawRsi = calculateRSI(fullSeries, rsiConfig.period || 14);
-          setRsiData(rawRsi.filter(d => d.time >= visibleStartTime));
-      }
-      const macdConfig = indicatorConfigs.find(c => c.type === 'MACD');
-      if (macdConfig?.visible) {
-          const rawMacd = calculateMACD(fullSeries, macdConfig.fastLength || 12, macdConfig.slowLength || 26, macdConfig.signalLength || 9);
-          setMacdData({
-              macd: rawMacd.macd.filter(d => d.time >= visibleStartTime),
-              signal: rawMacd.signal.filter(d => d.time >= visibleStartTime),
-              histogram: rawMacd.histogram.filter(d => d.time >= visibleStartTime)
-          });
-      }
-  }, [chartData, indicatorConfigs]);
-
-  // FILTER EMA MAP BASED ON REPLAY TIME
-  const slicedEmaMap = useMemo(() => {
-      if (emaDataMap.size === 0) return undefined;
-      const sliced = new Map<string, { time: number; value: number }[]>();
-      emaDataMap.forEach((points, id) => {
-          sliced.set(id, points.filter(p => p.time <= lastTime));
-      });
-      return sliced;
-  }, [emaDataMap, lastTime]);
-
-  // ... (Drawing Handlers) ...
-  const toggleIndicator = (id: string) => {
-      setIndicatorConfigs(prev => prev.map(c => c.id === id ? { ...c, visible: !c.visible } : c));
-  };
-  const handleRemoveIndicator = (id: string) => {
-      setIndicatorConfigs(prev => prev.filter(c => c.id !== id));
-  };
-  const handleIndicatorUpdate = (newConfig: IndicatorConfig) => {
-      setIndicatorConfigs(prev => prev.map(c => c.id === newConfig.id ? newConfig : c));
-  };
-  const handleAddIndicator = (type: IndicatorType) => {
-      const newId = `custom-${type}-${Math.random().toString(36).substr(2, 5)}`;
-      const baseConfig: Partial<IndicatorConfig> = {
-          id: newId,
-          type,
-          visible: true
-      };
-      
-      if (type === 'EMA') {
-          baseConfig.period = 14;
-          baseConfig.color = '#ff9800'; // Different color for new ones
-      } else if (type === 'RSI') {
-          baseConfig.period = 14;
-          baseConfig.upperLevel = 70;
-          baseConfig.lowerLevel = 30;
-          baseConfig.color = '#e91e63';
-      } else if (type === 'MACD') {
-          baseConfig.fastLength = 12;
-          baseConfig.slowLength = 26;
-          baseConfig.signalLength = 9;
-          baseConfig.color = '#00bcd4';
-          baseConfig.signalColor = '#ff5722';
-      }
-      
-      setIndicatorConfigs(prev => [...prev, baseConfig as IndicatorConfig]);
-  };
-
-  const handleAddAutoKillZone = () => {
-      const exists = allDrawings.some(d => d.type === 'KILLZONE' && d.symbol === activeSymbol);
-      if (exists) {
-          const kz = allDrawings.find(d => d.type === 'KILLZONE' && d.symbol === activeSymbol);
-          if (kz) setSelectedDrawingId(kz.id);
-          return;
-      }
-      const newKZ: DrawingObject = {
-          id: Math.random().toString(36).substr(2, 9),
-          symbol: activeSymbol,
-          type: 'KILLZONE',
-          p1: { time: currentSimTime, price: tradingPrice },
-          p2: { time: currentSimTime, price: tradingPrice },
-          visible: true,
-          locked: false,
-          color: '#ffffff',
-          lineWidth: 1,
-          lineStyle: 'solid',
-          killZoneConfig: { ...DEFAULT_KILLZONE_CONFIG }
-      };
-      setAllDrawings(prev => [...prev, newKZ]);
-      setSelectedDrawingId(newKZ.id);
-  };
-
-  const handleDrawingCreate = (d: DrawingObject) => {
-      const symbolDrawing = { ...d, symbol: activeSymbol };
-      const isPosition = d.type === 'LONG_POSITION' || d.type === 'SHORT_POSITION';
-      if (d.type === 'FIB') {
-        // USE CURRENT DEFAULT LEVELS (Persistent state)
-        symbolDrawing.fibLevels = currentFibLevels.map(l => ({...l})); 
-      } else if (isPosition) {
-        const isLong = d.type === 'LONG_POSITION';
-        const entryPrice = d.p1.price;
-        const diff = Math.abs(d.p2.price - entryPrice);
-        const minThreshold = entryPrice * 0.0001; 
-        const priceOffset = diff > minThreshold ? diff : entryPrice * 0.01;
-        if (!d.targetPrice) symbolDrawing.targetPrice = isLong ? entryPrice + priceOffset : entryPrice - priceOffset;
-        if (!d.stopPrice) {
-            const slOffset = priceOffset * 0.5;
-            symbolDrawing.stopPrice = isLong ? entryPrice - slOffset : entryPrice + slOffset;
-        }
-        const timeDiff = Math.abs(d.p2.time - d.p1.time);
-        if (timeDiff === 0) {
-            const barInterval = chartData.length > 1 ? chartData[1].time - chartData[0].time : 3600;
-            symbolDrawing.p2.time = d.p1.time + (barInterval * 20);
-        }
-      } else if (d.type === 'TEXT') {
-          symbolDrawing.text = "Text";
-          symbolDrawing.fontSize = 14;
-          symbolDrawing.color = '#ffffff'; 
-      }
-      setAllDrawings(prev => [...prev, symbolDrawing]); setSelectedDrawingId(d.id); setActiveTool('CURSOR'); 
-  };
-  
-  const handleDrawingUpdate = (updated: DrawingObject) => {
-      // IF UPDATING FIB, SAVE SETTINGS AS NEW DEFAULT
-      if (updated.type === 'FIB' && updated.fibLevels) {
-          setCurrentFibLevels(updated.fibLevels.map(l => ({...l})));
-      }
-      setAllDrawings(prev => prev.map(d => d.id === updated.id ? updated : d));
-  };
-  
-  const handleDrawingDelete = (id: string) => setAllDrawings(prev => prev.filter(d => d.id !== id));
-
-  const handleModifyTrade = (tradeId: string, newSl: number, newTp: number) => {
-      setAccount(prev => ({ ...prev, history: prev.history.map(t => t.id === tradeId ? { ...t, stopLoss: newSl, takeProfit: newTp } : t) }));
-  };
-  const handleModifyOrderEntry = (tradeId: string, newEntryPrice: number) => {
-      setAccount(prev => ({ ...prev, history: prev.history.map(t => t.id === tradeId && t.status === OrderStatus.PENDING ? { ...t, entryPrice: newEntryPrice } : t) }));
-  };
-  const handleUpdateTrade = (tradeId: string, journal: TradeJournal) => {
-      setAccount(prev => ({ ...prev, history: prev.history.map(t => t.id === tradeId ? { ...t, journal } : t) }));
-  };
-  const handleCloseOrder = (tradeId: string, exitPrice?: number) => {
-      setAccount(prevAcc => {
-          let realizedPnL = 0;
-          let oldFloatingPnL = 0;
-          const updatedHistory = prevAcc.history.map(trade => {
-              if (trade.id === tradeId && (trade.status === OrderStatus.OPEN || trade.status === OrderStatus.PENDING)) {
-                  if (trade.status === OrderStatus.PENDING) return { ...trade, status: OrderStatus.CLOSED, pnl: 0 };
-                  oldFloatingPnL = trade.pnl || 0;
-                  const finalPrice = exitPrice !== undefined ? exitPrice : (trade.symbol === activeSymbol ? tradingPrice : trade.entryPrice); 
-                  const multiplier = trade.side === OrderSide.LONG ? 1 : -1;
-                  const contractSize = getContractSize(trade.symbol);
-                  const rawPnL = (finalPrice - trade.entryPrice) * trade.quantity * contractSize * multiplier;
-                  realizedPnL = calculatePnLInUSD(trade.symbol, rawPnL, finalPrice);
-                  return { ...trade, status: OrderStatus.CLOSED, closePrice: finalPrice, closeTime: currentSimTime, pnl: realizedPnL };
-              }
-              return trade;
-          });
-          const newBalance = prevAcc.balance + realizedPnL;
-          const newEquity = prevAcc.equity - oldFloatingPnL + realizedPnL;
-          return { ...prevAcc, history: updatedHistory, balance: newBalance, equity: newEquity };
-      });
-  };
-  const handlePlaceOrder = (side: OrderSide, type: OrderType, entry: number, sl: number, tp: number, quantity: number) => {
-      if (account.equity <= 0) { alert("ไม่สามารถเปิดออเดอร์ได้: พอร์ตแตกแล้ว (Equity = 0)\nกรุณารีเซ็ตโปรไฟล์ใหม่ หรือเติมเงิน"); return; }
-      const isMarket = type === OrderType.MARKET;
-      const executionPrice = isMarket ? tradingPrice : entry;
-      if (executionPrice <= 0) { alert(`ไม่สามารถส่งคำสั่งได้: ราคาตลาดไม่ถูกต้อง`); return; }
-      const requiredMargin = calculateRequiredMargin(activeSymbol, quantity, executionPrice);
-      let currentUsedMargin = 0;
-      account.history.forEach(t => { if (t.status === OrderStatus.OPEN) currentUsedMargin += calculateRequiredMargin(t.symbol, t.quantity, t.entryPrice); });
-      const freeMargin = account.equity - currentUsedMargin;
-      if (requiredMargin > freeMargin) { alert(`Margin ไม่เพียงพอ (Insufficient Margin)!`); return; }
-      const newTrade: Trade = {
-          id: Math.random().toString(36).substr(2, 9),
-          symbol: activeSymbol, side, type, entryPrice: executionPrice, initialStopLoss: sl,
-          entryTime: isMarket ? currentSimTime : undefined, orderTime: currentSimTime, stopLoss: sl, takeProfit: tp, quantity, status: isMarket ? OrderStatus.OPEN : OrderStatus.PENDING, pnl: 0
-      };
-      setAccount(prev => ({ ...prev, history: [...prev.history, newTrade] }));
-  };
-
-  useEffect(() => {
-      if (chartData.length === 0 || !tradingPrice || account.history.length === 0) return;
-      let floatingPnL = 0;
-      let usedMargin = 0;
-      const updatedHistory = account.history.map(t => {
-          if (t.status === OrderStatus.OPEN) {
-               usedMargin += calculateRequiredMargin(t.symbol, t.quantity, t.entryPrice);
-               if (t.symbol === activeSymbol) {
-                   const contractSize = getContractSize(t.symbol);
-                   const mult = t.side === OrderSide.LONG ? 1 : -1;
-                   const rawPnL = (tradingPrice - t.entryPrice) * t.quantity * contractSize * mult;
-                   const pnlUSD = calculatePnLInUSD(t.symbol, rawPnL, tradingPrice);
-                   return { ...t, pnl: pnlUSD }; 
-               }
-               return t;
-          }
-          return t;
-      });
-      updatedHistory.forEach(t => { if (t.status === OrderStatus.OPEN) floatingPnL += (t.pnl || 0); });
-      const currentEquity = account.balance + floatingPnL;
-      const marginLevel = usedMargin > 0 ? (currentEquity / usedMargin) * 100 : 999999;
-      if (currentEquity <= 0 || marginLevel <= STOP_OUT_LEVEL) {
-          console.warn(`STOP OUT TRIGGERED: Equity=${currentEquity}, MarginLevel=${marginLevel}`);
-          const stopOutHistory = updatedHistory.map(t => {
-              if (t.status === OrderStatus.OPEN) {
-                   const closeP = t.symbol === activeSymbol ? tradingPrice : t.entryPrice; 
-                   return { ...t, status: OrderStatus.CLOSED, closePrice: closeP, closeTime: currentSimTime, pnl: t.pnl };
-              }
-              return t;
-          });
-          setAccount(prev => ({ ...prev, history: stopOutHistory, equity: currentEquity <= 0 ? 0 : currentEquity, balance: currentEquity <= 0 ? 0 : currentEquity, maxDrawdown: Math.max(prev.maxDrawdown, prev.maxEquity - 0) }));
-          setSimState(prev => ({ ...prev, isPlaying: false }));
-          alert(`⚠️ พอร์ตแตก! \n\nEquity: $${currentEquity.toFixed(2)} \nMargin Level: ${marginLevel.toFixed(2)}% \n\nระบบบังคับปิดออเดอร์ทั้งหมด (Force Close All)`);
-          return; 
-      }
-      setAccount(prev => ({ ...prev, history: updatedHistory, equity: currentEquity, maxEquity: Math.max(prev.maxEquity, currentEquity), maxDrawdown: Math.max(prev.maxDrawdown, prev.maxEquity - currentEquity) }));
-      const currentCandle = currentSlice.length > 0 ? currentSlice[currentSlice.length - 1] : null;
-      if (currentCandle) {
-          updatedHistory.filter(t => t.status === OrderStatus.OPEN).forEach(trade => {
-             if (trade.symbol === activeSymbol) {
-                 const hitHigh = currentCandle.high;
-                 const hitLow = currentCandle.low;
-                 if (trade.side === OrderSide.LONG) {
-                     if (trade.stopLoss > 0 && hitLow <= trade.stopLoss) handleCloseOrder(trade.id, trade.stopLoss);
-                     else if (trade.takeProfit > 0 && hitHigh >= trade.takeProfit) handleCloseOrder(trade.id, trade.takeProfit);
-                 } else {
-                     if (trade.stopLoss > 0 && hitHigh >= trade.stopLoss) handleCloseOrder(trade.id, trade.stopLoss);
-                     else if (trade.takeProfit > 0 && hitLow <= trade.takeProfit) handleCloseOrder(trade.id, trade.takeProfit);
-                 }
-             }
-          });
-          updatedHistory.filter(t => t.status === OrderStatus.PENDING).forEach(trade => {
-              if (trade.symbol === activeSymbol) {
-                  const hitHigh = currentCandle.high >= trade.entryPrice;
-                  const hitLow = currentCandle.low <= trade.entryPrice;
-                  let triggered = false;
-                  if (trade.side === OrderSide.LONG) {
-                      if (trade.type === OrderType.LIMIT && hitLow) triggered = true;
-                      if (trade.type === OrderType.STOP && hitHigh) triggered = true;
-                  } else {
-                      if (trade.type === OrderType.LIMIT && hitHigh) triggered = true;
-                      if (trade.type === OrderType.STOP && hitLow) triggered = true;
-                  }
-                  if (triggered) {
-                     setAccount(prev => ({ ...prev, history: prev.history.map(t => t.id === trade.id ? { ...t, status: OrderStatus.OPEN, entryTime: currentCandle.time } : t) }));
-                  }
-              }
-          });
-      }
-  }, [tradingPrice, activeSymbol, simState.currentIndex]); 
 
   if (!activeProfileId || !activeProfile) {
       return (
@@ -756,7 +201,7 @@ const App: React.FC = () => {
       <AccountDashboard 
         account={account} currentPrice={tradingPrice} currentDate={currentSimTime} activeSymbol={activeSymbol} activeTimeframe={activeTimeframe} simState={simState} availableSymbols={activeProfile.selectedSymbols || []}
         pricePrecision={currentDigits}
-        onSymbolChange={handleSymbolChange} onTimeframeChange={setActiveTimeframe} onPlayPause={() => setSimState(s => ({...s, isPlaying: !s.isPlaying}))} onNext={handleStep} onSpeedChange={(v) => setSimState(s => ({...s, speed: v}))} onJumpToDate={handleJumpToDate} onToggleStats={() => setShowStats(true)} onExit={handleExitProfile}
+        onSymbolChange={onSymbolChange} onTimeframeChange={setActiveTimeframe} onPlayPause={() => setSimState(s => ({...s, isPlaying: !s.isPlaying}))} onNext={handleStep} onSpeedChange={(v) => setSimState(s => ({...s, speed: v}))} onJumpToDate={handleJumpToDate} onToggleStats={() => setShowStats(true)} onExit={handleExitProfile}
       />
       
       {isLoading && (
@@ -855,7 +300,7 @@ const App: React.FC = () => {
              
              <div className="w-8 h-[1px] bg-white/10"></div>
 
-             <div className="space-y-2 w-full flex flex-col items-center relative" ref={indicatorMenuRef}>
+             <div className="space-y-2 w-full flex flex-col items-center relative">
                 <button 
                     onClick={() => setShowIndicatorMenu(!showIndicatorMenu)} 
                     className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200 group relative ${showIndicatorMenu ? 'bg-purple-500/20 text-purple-400 ring-1 ring-purple-500/50' : 'text-zinc-500 hover:text-purple-300 hover:bg-white/5'}`} 
@@ -866,7 +311,6 @@ const App: React.FC = () => {
                 {showIndicatorMenu && (
                     <div className="absolute left-14 top-0 glass-panel rounded-xl shadow-2xl p-2 z-50 w-36 space-y-1 animate-in fade-in slide-in-from-left-2 duration-200">
                         <div className="text-[10px] text-zinc-500 font-bold uppercase mb-1 px-2 py-1 tracking-wider">Indicators</div>
-                        {/* List existing indicators */}
                         {indicatorConfigs.map(c => (
                             <button 
                                 key={c.id} 
@@ -918,24 +362,23 @@ const App: React.FC = () => {
                 <ChartContainer 
                     key={activeSymbol} 
                     activeSymbol={activeSymbol}
-                    interval={TF_SECONDS[activeTimeframe]} // Pass interval to chart
+                    interval={TF_SECONDS[activeTimeframe]}
                     ref={chartRef} 
                     data={currentSlice} 
-                    emaDataMap={slicedEmaMap} // PASS SLICED MAP HERE
+                    emaDataMap={slicedEmaMap}
                     rsiData={rsiData.filter(d => d.time <= lastTime)} macdData={{ macd: macdData.macd.filter(d => d.time <= lastTime), signal: macdData.signal.filter(d => d.time <= lastTime), histogram: macdData.histogram.filter(d => d.time <= lastTime) }} 
                     trades={account.history.filter(t => t.symbol === activeSymbol)} 
                     onModifyTrade={handleModifyTrade}
                     onModifyOrderEntry={handleModifyOrderEntry}
-                    onTradeDrag={setActiveDragTrade} // Pass dragging callback
+                    onTradeDrag={setActiveDragTrade}
                     activeTool={activeTool} magnetMode={magnetMode} drawingSettings={drawingSettings} indicatorConfigs={indicatorConfigs} 
                     onDrawingCreate={handleDrawingCreate} onDrawingUpdate={handleDrawingUpdate} onDrawingEdit={(d) => setEditingDrawingId(d.id)} onDrawingSelect={setSelectedDrawingId} onDrawingDelete={handleDrawingDelete} 
                     onLoadMore={handleLoadMoreHistory} onIndicatorDblClick={setEditingIndicator}
-                    onRemoveIndicator={handleRemoveIndicator} // Pass remove handler
+                    onRemoveIndicator={handleRemoveIndicator}
                     drawings={currentDrawings} selectedDrawingId={selectedDrawingId} 
                     pricePrecision={currentDigits} 
                 />
                 
-                {/* MARKET STRUCTURE WIDGET */}
                 <MarketStructureWidget 
                     symbol={activeSymbol} 
                     currentSimTime={currentSimTime} 
@@ -944,11 +387,8 @@ const App: React.FC = () => {
                 />
 
             </div>
-            
-            {/* ControlBar Removed to maximize vertical space */}
         </div>
         
-        {/* RIGHT PANEL - Floating Bubble Style */}
         <div className="glass-bubble w-80 rounded-2xl flex flex-col shadow-2xl overflow-hidden ring-1 ring-white/5">
             <OrderPanel activeSymbol={activeSymbol} currentPrice={tradingPrice} account={account} onPlaceOrder={handlePlaceOrder} onCloseOrder={handleCloseOrder} activeDragTrade={activeDragTrade} />
         </div>

@@ -21,11 +21,11 @@ interface Props {
 // Helper for consistency
 const formatCurrency = (val: number) => val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-const MetricCard: React.FC<{ label: string; value: string; sub?: string; color?: string }> = ({ label, value, sub, color }) => (
+const MetricCard: React.FC<{ label: string; value: string; sub?: string | React.ReactNode; color?: string }> = ({ label, value, sub, color }) => (
     <div className="glass-panel p-4 rounded-xl flex flex-col justify-center bg-white/[0.02] border border-white/5">
         <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest mb-1">{label}</span>
         <span className={`text-xl font-mono font-black tracking-tight ${color || 'text-white'}`}>{value}</span>
-        {sub && <span className="text-[10px] text-zinc-600 font-medium mt-1">{sub}</span>}
+        {sub && (typeof sub === 'string' ? <span className="text-[10px] text-zinc-600 font-medium mt-1">{sub}</span> : sub)}
     </div>
 );
 
@@ -227,17 +227,17 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
           let textColor = "text-zinc-500";
           let pnlText = "";
           if (d.pnl !== undefined) {
-               if (d.pnl > 0) { cellBg = "bg-green-500/10 hover:bg-green-500/20"; textColor = "text-green-400"; pnlText = `+${d.pnl.toFixed(0)}`; } 
-               else if (d.pnl < 0) { cellBg = "bg-red-500/10 hover:bg-red-500/20"; textColor = "text-red-400"; pnlText = `${d.pnl.toFixed(0)}`; } 
-               else { cellBg = "bg-white/10"; textColor = "text-zinc-400"; pnlText = "0"; }
+               if (d.pnl > 0) { cellBg = "bg-green-500/10 hover:bg-green-500/20"; textColor = "text-green-400"; pnlText = `+${d.pnl.toFixed(2)}`; } 
+               else if (d.pnl < 0) { cellBg = "bg-red-500/10 hover:bg-red-500/20"; textColor = "text-red-400"; pnlText = `${d.pnl.toFixed(2)}`; } 
+               else { cellBg = "bg-white/10"; textColor = "text-zinc-400"; pnlText = "0.00"; }
           }
           return (
-               <div key={i} className={`relative p-2 flex flex-col justify-between transition-colors rounded-lg m-0.5 ${cellBg}`}>
-                   <span className={`text-[11px] font-bold ${d.pnl !== undefined ? 'text-zinc-300' : 'text-zinc-600'}`}>{d.day}</span>
+               <div key={i} className={`relative p-1.5 flex flex-col justify-between transition-colors rounded-lg m-0.5 ${cellBg} h-full min-h-0 overflow-hidden`}>
+                   <span className={`text-[10px] font-bold ${d.pnl !== undefined ? 'text-zinc-300' : 'text-zinc-600'}`}>{d.day}</span>
                    {d.pnl !== undefined && (
                        <div className="text-right mt-auto">
-                           <div className={`text-xs font-black tracking-tight leading-none ${textColor}`}>{pnlText}</div>
-                           <div className="text-[10px] text-zinc-500 font-medium leading-none mt-1">{d.count} trds</div>
+                           <div className={`text-[11px] font-black tracking-tight leading-none ${textColor}`}>{pnlText}</div>
+                           <div className="text-[9px] text-zinc-500 font-medium leading-none mt-0.5">{d.count} trds</div>
                        </div>
                    )}
                </div>
@@ -819,7 +819,17 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
             
             {/* KEY METRICS */}
             <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
-                <MetricCard label="Total Trades" value={closedTrades.length.toString()} sub={`W:${wins.length} L:${losses.length} BE:${breakEvens.length}`} />
+                <MetricCard 
+                    label="Total Trades" 
+                    value={closedTrades.length.toString()} 
+                    sub={
+                        <div className="flex items-center space-x-1.5 mt-1 text-xs font-bold tracking-tight">
+                            <span className="text-green-500">W:{wins.length}</span>
+                            <span className="text-red-500">L:{losses.length}</span>
+                            <span className="text-zinc-500">BE:{breakEvens.length}</span>
+                        </div>
+                    } 
+                />
                 <MetricCard label="Win Rate" value={`${winRate.toFixed(1)}%`} color={winRate > 50 ? 'text-green-400' : 'text-red-400'} />
                 <MetricCard label="Expectancy" value={`$${formatCurrency(expectancy)}`} sub="Per Trade" color={expectancy > 0 ? 'text-green-400' : 'text-zinc-200'} />
                 <MetricCard label="Avg Duration" value={formatDuration(avgDurationSeconds)} sub="Holding Time" />
@@ -831,41 +841,43 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
 
             {/* CHARTS */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div className="glass-panel rounded-2xl p-6 h-[400px] relative group bg-white/[0.02]">
-                    <h3 className="text-sm font-bold text-zinc-400 uppercase mb-4 flex justify-between"><span>Equity Curve</span><span className="text-zinc-600">Realized PnL</span></h3>
-                    <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart data={equityData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
-                            <defs>
-                                <linearGradient id="colorEq" x1="0" y1="0" x2="0" y2="1">
-                                    <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.4}/>
-                                    <stop offset="95%" stopColor="#3b82f6" stopOpacity={0.05}/>
-                                </linearGradient>
-                            </defs>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
-                            <YAxis 
-                                domain={[domainMin, domainMax]} 
-                                stroke="#52525b" 
-                                fontSize={10} 
-                                tickFormatter={(val) => `$${(val/1000).toFixed(1)}k`}
-                                width={45}
-                            />
-                            <Tooltip 
-                                contentStyle={{ backgroundColor: '#18181b', borderColor: '#3f3f46', color: '#fff', fontSize: '12px', borderRadius: '8px' }} 
-                                itemStyle={{ color: '#3b82f6', fontWeight: 'bold' }} 
-                                formatter={(val: number) => [`$${formatCurrency(val)}`, 'Balance']} 
-                                animationDuration={0}
-                            />
-                            <Area 
-                                type="monotone" 
-                                dataKey="balance" 
-                                stroke="#3b82f6" 
-                                strokeWidth={2} 
-                                fillOpacity={1} 
-                                fill="url(#colorEq)" 
-                                animationDuration={500}
-                            />
-                        </AreaChart>
-                    </ResponsiveContainer>
+                <div className="glass-panel rounded-2xl p-6 h-[400px] relative group bg-white/[0.02] flex flex-col">
+                    <h3 className="text-sm font-bold text-zinc-400 uppercase mb-4 flex justify-between shrink-0"><span>Equity Curve</span><span className="text-zinc-600">Realized PnL</span></h3>
+                    <div className="flex-1 min-h-0 w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                            <AreaChart data={equityData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
+                                <defs>
+                                    <linearGradient id="colorEq" x1="0" y1="0" x2="0" y2="1">
+                                        <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.4}/>
+                                        <stop offset="95%" stopColor="#3b82f6" stopOpacity={0.05}/>
+                                    </linearGradient>
+                                </defs>
+                                <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
+                                <YAxis 
+                                    domain={[domainMin, domainMax]} 
+                                    stroke="#52525b" 
+                                    fontSize={10} 
+                                    tickFormatter={(val) => `$${(val/1000).toFixed(1)}k`}
+                                    width={45}
+                                />
+                                <Tooltip 
+                                    contentStyle={{ backgroundColor: '#18181b', borderColor: '#3f3f46', color: '#fff', fontSize: '12px', borderRadius: '8px' }} 
+                                    itemStyle={{ color: '#3b82f6', fontWeight: 'bold' }} 
+                                    formatter={(val: number) => [`$${formatCurrency(val)}`, 'Balance']} 
+                                    animationDuration={0}
+                                />
+                                <Area 
+                                    type="monotone" 
+                                    dataKey="balance" 
+                                    stroke="#3b82f6" 
+                                    strokeWidth={2} 
+                                    fillOpacity={1} 
+                                    fill="url(#colorEq)" 
+                                    animationDuration={500}
+                                />
+                            </AreaChart>
+                        </ResponsiveContainer>
+                    </div>
                 </div>
 
                 <div className="glass-panel rounded-2xl p-6 h-[400px] flex flex-col bg-white/[0.02]">
@@ -877,11 +889,11 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                             <button onClick={() => changeMonth(1)} className="text-zinc-400 hover:text-white"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg></button>
                         </div>
                      </div>
-                     <div className="flex-1 flex flex-col rounded-xl overflow-hidden bg-black/20 border border-white/5">
-                         <div className="grid grid-cols-7 border-b border-white/5 bg-white/5">
-                             {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map(d => <div key={d} className="text-center py-2 text-[11px] text-zinc-500 font-bold uppercase">{d}</div>)}
+                     <div className="flex-1 flex flex-col rounded-xl overflow-hidden bg-black/20 border border-white/5 min-h-0">
+                         <div className="grid grid-cols-7 border-b border-white/5 bg-white/5 shrink-0">
+                             {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d, i) => <div key={i} className="text-center py-2 text-[11px] text-zinc-500 font-bold uppercase">{d}</div>)}
                          </div>
-                         <div className="grid grid-cols-7 grid-rows-6 gap-0.5 p-1 flex-1">
+                         <div className="grid grid-cols-7 grid-rows-6 gap-0.5 p-1 flex-1 min-h-0 overflow-hidden">
                              {getCalendarCells()}
                          </div>
                      </div>
