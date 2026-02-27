@@ -1,10 +1,8 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import FingerprintJS from '@fingerprintjs/fingerprintjs';
-import { supabase } from '../services/supabase';
 import { TraderProfile, SymbolType, TimeframeType } from '../types';
 import { SYMBOL_CONFIG } from '../constants';
-import { fetchFirstCandle, fetchLastCandle, verifyCoupon, recordCouponUsage, CouponInfo } from '../services/api';
+import { fetchFirstCandle, fetchLastCandle } from '../services/api';
 
 interface Props {
   profiles: TraderProfile[];
@@ -25,15 +23,6 @@ export const ChallengeSetupModal: React.FC<Props> = ({ profiles, onStart, onCrea
   const [endDate, setEndDate] = useState('');
   const [isAssetDropdownOpen, setIsAssetDropdownOpen] = useState(false);
   
-  // Coupon State
-  const [couponCode, setCouponCode] = useState('');
-  const [isCouponVerified, setIsCouponVerified] = useState(false);
-  const [couponInfo, setCouponInfo] = useState<CouponInfo | null>(null);
-  const [expiryDate, setExpiryDate] = useState<string>('');
-  const [deviceId, setDeviceId] = useState('');
-  const [couponError, setCouponError] = useState('');
-  const [isVerifying, setIsVerifying] = useState(false);
-  
   // Data Availability State
   const [validSymbols, setValidSymbols] = useState<SymbolType[]>([]);
   const [isSyncingDates, setIsSyncingDates] = useState(false);
@@ -44,70 +33,6 @@ export const ChallengeSetupModal: React.FC<Props> = ({ profiles, onStart, onCrea
   useEffect(() => {
     if (profiles.length === 0) setView('CREATE');
   }, [profiles]);
-
-  // Load Persisted Coupon and Device ID
-  useEffect(() => {
-    const init = async () => {
-        // 1. Load Fingerprint
-        const fp = await FingerprintJS.load();
-        const result = await fp.get();
-        const vid = result.visitorId;
-        setDeviceId(vid);
-
-        // 2. Check User Status (Supabase)
-        const { data: { user } } = await supabase.auth.getUser();
-        if (user) {
-            // Check Profile
-            const { data: profile } = await supabase.from('user_profiles').select('trial_ends_at').eq('id', user.id).single();
-            if (profile?.trial_ends_at) {
-                const expiry = new Date(profile.trial_ends_at).getTime();
-                if (expiry > Date.now()) {
-                    setIsCouponVerified(true);
-                    setExpiryDate(new Date(expiry).toLocaleDateString('th-TH', { day: '2-digit', month: '2-digit', year: 'numeric' }));
-                    return;
-                }
-            }
-
-            // Check Device Usage for THIS user
-            const { data: usedRecord } = await supabase
-                .from('device_used_coupons')
-                .select('*')
-                .eq('device_id', vid)
-                .eq('user_id', user.id)
-                .single();
-            
-            if (usedRecord) {
-                 // Assume 90 days from usage if profile missing
-                 const usedAt = new Date(usedRecord.used_at || Date.now()).getTime();
-                 const expiry = usedAt + (90 * 24 * 60 * 60 * 1000);
-                 if (expiry > Date.now()) {
-                     setIsCouponVerified(true);
-                     setExpiryDate(new Date(expiry).toLocaleDateString('th-TH', { day: '2-digit', month: '2-digit', year: 'numeric' }));
-                     return;
-                 }
-            }
-        }
-
-        // 3. Fallback to LocalStorage (Legacy)
-        const saved = localStorage.getItem('verified_coupon_data');
-        if (saved) {
-            try {
-                const { coupon, expiry } = JSON.parse(saved);
-                const expiryTime = new Date(expiry.split('/').reverse().join('-')).getTime();
-                if (expiryTime > Date.now()) {
-                    setIsCouponVerified(true);
-                    setCouponInfo(coupon);
-                    setExpiryDate(expiry);
-                } else {
-                    localStorage.removeItem('verified_coupon_data');
-                }
-            } catch (e) {
-                localStorage.removeItem('verified_coupon_data');
-            }
-        }
-    };
-    init();
-  }, []);
 
   // Click outside to close asset dropdown
   useEffect(() => {
@@ -177,77 +102,16 @@ export const ChallengeSetupModal: React.FC<Props> = ({ profiles, onStart, onCrea
       }
   }, [selectedSymbol, view]);
 
-  const handleCreate = async () => {
+  const handleCreate = () => {
       if (!name.trim()) { alert("Please enter a session name"); return; }
       if (!selectedSymbol) { alert("Please select an asset"); return; }
-      if (!isCouponVerified) { alert("Please verify a coupon first"); return; }
       
       const startTs = new Date(startDate).getTime() / 1000;
       const endTs = new Date(endDate).getTime() / 1000;
       const symbol = selectedSymbol as SymbolType;
       
-      // 1. Record usage in Supabase AND Update Profile
-      if (couponInfo) {
-          await recordCouponUsage(couponInfo.code, deviceId);
-          
-          // Update Profile
-          const { data: { user } } = await supabase.auth.getUser();
-          if (user) {
-              const trialEndsAt = new Date();
-              trialEndsAt.setDate(trialEndsAt.getDate() + couponInfo.duration_days);
-              await supabase.from('user_profiles').upsert({ 
-                  id: user.id, 
-                  email: user.email,
-                  trial_ends_at: trialEndsAt.toISOString() 
-              });
-          }
-      }
-
-      // 2. Create session locally
+      // Default to H1 for initial view
       onCreate(name, balance, [symbol], startTs, endTs, 'H1', undefined);
-  };
-
-  const handleVerifyCoupon = async () => {
-      if (!couponCode.trim()) {
-          setCouponError("กรุณากรอกรหัสคูปอง");
-          return;
-      }
-      if (!deviceId) {
-          setCouponError("กำลังดึงข้อมูลเครื่อง... กรุณารอสักครู่");
-          return;
-      }
-
-      setIsVerifying(true);
-      setCouponError('');
-      
-      const result = await verifyCoupon(couponCode.trim(), deviceId);
-      
-      if (result.success && result.coupon) {
-          const duration = result.coupon.duration_days;
-          const date = new Date();
-          date.setDate(date.getDate() + duration);
-          const expiryStr = date.toLocaleDateString('th-TH', { day: '2-digit', month: '2-digit', year: 'numeric' });
-          
-          setIsCouponVerified(true);
-          setCouponInfo(result.coupon);
-          setExpiryDate(expiryStr);
-          
-          // Persist to localStorage
-          localStorage.setItem('verified_coupon_data', JSON.stringify({
-              coupon: result.coupon,
-              expiry: expiryStr
-          }));
-      } else {
-          setCouponError(result.error || "รหัสคูปองไม่ถูกต้อง");
-      }
-      setIsVerifying(false);
-  };
-
-  const getExpirationDate = () => {
-      if (!couponInfo) return '';
-      const date = new Date();
-      date.setDate(date.getDate() + couponInfo.duration_days);
-      return date.toLocaleDateString('th-TH', { day: '2-digit', month: '2-digit', year: 'numeric' });
   };
 
   const formatDate = (ts: number) => new Date(ts).toLocaleString('th-TH', { 
@@ -266,83 +130,28 @@ export const ChallengeSetupModal: React.FC<Props> = ({ profiles, onStart, onCrea
       <div className="relative glass-bubble border border-white/10 rounded-3xl shadow-2xl w-[800px] min-h-[780px] flex flex-col max-h-[95vh] overflow-hidden font-sans text-slate-200 ring-1 ring-white/5 animate-in zoom-in-95 duration-300">
         
         {/* Header */}
-        <div className="flex justify-between items-center p-6 border-b border-white/5 bg-white/[0.02] relative">
-             <div className="flex-1">
-                <div className="flex items-center mb-1">
-                    <h2 className="text-2xl font-black text-white tracking-tight mr-auto">
-                        {view === 'CREATE' ? 'New Simulation' : 'Select Session'}
-                    </h2>
-                    
-                    {/* Coupon Display - Centered and Larger */}
-                    <div className="absolute left-1/2 -translate-x-1/2 flex items-center">
-                        {!isCouponVerified ? (
-                            <div className="flex flex-col items-center">
-                                <div className="flex gap-2">
-                                    <input 
-                                        type="text" 
-                                        value={couponCode}
-                                        onChange={(e) => setCouponCode(e.target.value)}
-                                        className="bg-black/40 border border-white/10 rounded-xl px-4 py-2 text-sm text-white focus:border-blue-500/50 outline-none transition-colors w-48 text-center font-bold"
-                                        placeholder="กรอกรหัสคูปอง"
-                                    />
-                                    <button 
-                                        onClick={handleVerifyCoupon}
-                                        disabled={isVerifying}
-                                        className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-black px-6 py-2 rounded-xl transition-all uppercase tracking-wider shadow-lg shadow-blue-900/20"
-                                    >
-                                        {isVerifying ? '...' : 'ยืนยัน'}
-                                    </button>
-                                </div>
-                                {couponError && <p className="text-xs text-red-400 mt-1.5 font-bold animate-pulse">{couponError}</p>}
-                            </div>
-                        ) : (
-                            <div className="flex items-center space-x-4 bg-green-500/10 border border-green-500/20 rounded-2xl px-6 py-2.5 backdrop-blur-sm">
-                                <div className="text-center">
-                                    <p className="text-sm font-black text-green-400 leading-none uppercase tracking-wide">✅ คูปองพร้อมใช้งาน</p>
-                                    <p className="text-xs text-zinc-400 mt-1.5 font-medium">
-                                        หมดอายุ: <span className="text-white font-mono font-bold ml-1">{expiryDate}</span>
-                                    </p>
-                                </div>
-                                <div className="w-8 h-8 rounded-full bg-green-500/20 flex items-center justify-center text-green-400 shadow-inner">
-                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
-                                </div>
-                            </div>
-                        )}
-                    </div>
-                </div>
+        <div className="flex justify-between items-center p-6 border-b border-white/5 bg-white/[0.02]">
+             <div>
+                <h2 className="text-2xl font-black text-white tracking-tight mb-1">
+                    {view === 'CREATE' ? 'New Simulation' : 'Select Session'}
+                </h2>
                 <p className="text-xs text-zinc-500 uppercase tracking-widest font-bold">ProTrade Replay</p>
              </div>
              
-             <div className="flex items-center space-x-4 ml-6">
-                {view === 'LIST' && (
-                    <button 
-                        onClick={() => setView('CREATE')}
-                        className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-4 py-2 rounded-xl transition-all shadow-lg shadow-blue-900/30 hover:scale-105 active:scale-95"
-                    >
-                        + CREATE NEW
-                    </button>
-                )}
-                {view === 'CREATE' && profiles.length > 0 && (
-                    <button onClick={() => setView('LIST')} className="text-zinc-400 hover:text-white flex items-center space-x-2 px-3 py-1.5 rounded-lg hover:bg-white/5 transition-all">
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
-                        <span className="text-xs font-bold uppercase">Back</span>
-                    </button>
-                )}
-                
-                <div className="h-6 w-px bg-white/10 mx-2"></div>
-
-                <button
-                    onClick={async () => {
-                        await supabase.auth.signOut();
-                        window.location.reload();
-                    }}
-                    className="text-zinc-500 hover:text-red-400 flex items-center space-x-2 px-3 py-1.5 rounded-lg hover:bg-white/5 transition-all"
-                    title="Sign Out"
-                >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
-                    <span className="text-xs font-bold uppercase">Sign Out</span>
-                </button>
-             </div>
+             {view === 'LIST' && (
+                 <button 
+                    onClick={() => setView('CREATE')}
+                    className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-4 py-2 rounded-xl transition-all shadow-lg shadow-blue-900/30 hover:scale-105 active:scale-95"
+                 >
+                    + CREATE NEW
+                 </button>
+             )}
+             {view === 'CREATE' && profiles.length > 0 && (
+                 <button onClick={() => setView('LIST')} className="text-zinc-400 hover:text-white flex items-center space-x-2 px-3 py-1.5 rounded-lg hover:bg-white/5 transition-all">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
+                    <span className="text-xs font-bold uppercase">Back</span>
+                 </button>
+             )}
         </div>
 
         <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
@@ -397,7 +206,9 @@ export const ChallengeSetupModal: React.FC<Props> = ({ profiles, onStart, onCrea
                                         onClick={(e) => { 
                                             e.stopPropagation(); 
                                             e.preventDefault();
-                                            onDelete(profile.id); 
+                                            if(window.confirm('Delete this profile permanently?')) {
+                                                onDelete(profile.id); 
+                                            }
                                         }}
                                         className="text-zinc-600 hover:text-red-400 p-2 rounded-lg hover:bg-red-500/10 transition-all opacity-100 relative z-50 cursor-pointer"
                                         title="Delete Session"
@@ -518,8 +329,14 @@ export const ChallengeSetupModal: React.FC<Props> = ({ profiles, onStart, onCrea
         {view === 'CREATE' && (
             <div className="p-6 border-t border-white/5 flex justify-end space-x-4 bg-black/20">
                 <button 
+                    onClick={() => profiles.length > 0 ? setView('LIST') : {}}
+                    className={`text-xs font-bold px-6 py-3 rounded-xl transition-colors uppercase tracking-wide ${profiles.length > 0 ? 'text-zinc-400 hover:text-white hover:bg-white/5' : 'text-zinc-700 cursor-not-allowed'}`}
+                >
+                    Cancel
+                </button>
+                <button 
                     onClick={handleCreate}
-                    disabled={isSyncingDates || !isCouponVerified}
+                    disabled={isSyncingDates}
                     className={`bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white text-xs font-bold px-8 py-3 rounded-xl transition-all shadow-lg shadow-blue-900/30 uppercase tracking-widest hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed`}
                 >
                     {isSyncingDates ? 'Syncing...' : 'Start Session'}

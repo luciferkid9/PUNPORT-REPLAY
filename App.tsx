@@ -14,11 +14,8 @@ import { MarketStructureWidget } from './components/MarketStructureWidget';
 import { IndicatorSettingsModal } from './components/IndicatorSettingsModal';
 import { LotSizeCalculatorModal } from './components/LotSizeCalculatorModal';
 import { LotSizeWidget } from './components/LotSizeWidget';
-import { AuthScreen } from './components/AuthScreen';
 import { calculateSMA, calculateEMA, calculateRSI, calculateMACD, calculateRequiredMargin, calculatePnLInUSD, resampleCandles } from './services/logicEngine';
 import { fetchCandles, parseCSV, fetchHistoricalData, fetchContextCandles, fetchFutureCandles, fetchFirstCandle } from './services/api';
-import { supabase } from './services/supabase';
-import { fetchUserSessions, saveUserSession, deleteUserSession } from './services/profileService';
 
 const STORAGE_KEY = 'protrade_profiles_v2'; 
 
@@ -53,10 +50,6 @@ const DEFAULT_FIB_LEVELS: FibLevel[] = [
 ];
 
 const App: React.FC = () => {
-  // --- AUTH STATE ---
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
-  const [userId, setUserId] = useState<string | null>(null);
-
   // --- STATE ---
   const [profiles, setProfiles] = useState<TraderProfile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
@@ -165,128 +158,25 @@ const App: React.FC = () => {
   // 1. INIT & PERSISTENCE
   const isLoadedRef = useRef(false);
 
-  // Load User ID on Auth
   useEffect(() => {
-      const checkUser = async () => {
-          const { data: { user } } = await supabase.auth.getUser();
-          if (user) {
-              setUserId(user.id);
-              setIsAuthenticated(true);
-          }
-      };
-      checkUser();
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) { 
+        try { 
+            setProfiles(JSON.parse(saved)); 
+        } catch(e) {
+            console.error("Failed to parse profiles", e);
+        } 
+    }
+    isLoadedRef.current = true;
+    setIsLoading(false);
   }, []);
 
-  // Load Profiles from Supabase when Authenticated
-  useEffect(() => {
-    if (!isAuthenticated || !userId) return;
-
-    const loadProfiles = async () => {
-        setIsLoading(true);
-        try {
-            const cloudProfiles = await fetchUserSessions(userId);
-            const saved = localStorage.getItem(STORAGE_KEY);
-            let localProfiles: TraderProfile[] = [];
-            
-            if (saved) {
-                try {
-                    localProfiles = JSON.parse(saved);
-                } catch (e) {
-                    console.error("Failed to parse local profiles", e);
-                }
-            }
-
-            // Merge Logic: Use a Map to handle duplicates by ID
-            const profileMap = new Map<string, TraderProfile>();
-
-            // 1. Add Cloud Profiles first
-            cloudProfiles.forEach(p => profileMap.set(p.id, p));
-
-            // 2. Merge Local Profiles (Overwrite if newer)
-            localProfiles.forEach(p => {
-                const existing = profileMap.get(p.id);
-                if (!existing) {
-                    profileMap.set(p.id, p);
-                } else {
-                    // If local is newer, use local
-                    if ((p.lastPlayed || 0) > (existing.lastPlayed || 0)) {
-                        profileMap.set(p.id, p);
-                    }
-                }
-            });
-
-            const mergedProfiles = Array.from(profileMap.values());
-            
-            // Sort by last played descending
-            mergedProfiles.sort((a, b) => (b.lastPlayed || 0) - (a.lastPlayed || 0));
-
-            setProfiles(mergedProfiles);
-
-            // Sync merged state back to Cloud if there are differences
-            // (Simple approach: just save each profile that came from local or was updated)
-            // For safety, we can just save all of them, but that might be heavy.
-            // Let's just save the ones that were "won" by local.
-            // Or simpler: just save the whole merged list if it differs length or content?
-            // Given the race condition fix in profileService, we can just iterate and save.
-            // But let's do it in the background.
-            
-            // We'll just trigger a save for the most recent profile to ensure it's up to date
-            if (mergedProfiles.length > 0) {
-                // We can't easily save ALL at once with current API (it saves one by one).
-                // We should update profileService to save ALL sessions at once.
-                // But for now, let's just save the active one if it exists? No active one yet.
-                // Let's just update the cloud with the full merged list.
-                // We need a new method in profileService for bulk update.
-                // For now, we'll iterate.
-                for (const p of mergedProfiles) {
-                     // Only save if it was from local (optimization) or just save all to be safe.
-                     // Saving all might hit rate limits.
-                     // Let's save only if it's not in cloud or local is newer.
-                     const cloudP = cloudProfiles.find(cp => cp.id === p.id);
-                     if (!cloudP || (p.lastPlayed || 0) > (cloudP.lastPlayed || 0)) {
-                         await saveUserSession(userId, p);
-                     }
-                }
-            }
-
-        } catch (e) {
-            console.error("Failed to load profiles", e);
-        } finally {
-            setIsLoading(false);
-            isLoadedRef.current = true;
-        }
-    };
-    loadProfiles();
-  }, [isAuthenticated, userId]);
-
-  // Save Active Profile to Supabase (Debounced / Event-driven)
-  const saveActiveProfile = useCallback(async () => {
-      if (!userId || !activeProfileId) return;
-      const profileToSave = profiles.find(p => p.id === activeProfileId);
-      if (profileToSave) {
-          await saveUserSession(userId, profileToSave);
+  useEffect(() => { 
+      if (isLoadedRef.current) {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(profiles)); 
       }
-  }, [userId, activeProfileId, profiles]);
+  }, [profiles]);
 
-  // Auto-save every 30 seconds if playing
-  useEffect(() => {
-      let interval: number;
-      if (simState.isPlaying && userId && activeProfileId) {
-          interval = window.setInterval(() => {
-              saveActiveProfile();
-          }, 30000);
-      }
-      return () => clearInterval(interval);
-  }, [simState.isPlaying, userId, activeProfileId, saveActiveProfile]);
-
-  // Save on Pause
-  useEffect(() => {
-      if (!simState.isPlaying && userId && activeProfileId && isLoadedRef.current) {
-          saveActiveProfile();
-      }
-  }, [simState.isPlaying, userId, activeProfileId]);
-
-  // Update Profile State (Local)
   useEffect(() => {
     if (activeProfileId) {
         setProfiles(prev => prev.map(p => {
@@ -318,7 +208,7 @@ const App: React.FC = () => {
   }, [activeProfileId]);
 
   // ... (Rest of Handlers) ...
-  const handleCreateProfile = async (name: string, balance: number, symbols: SymbolType[], startDate: number, endDate: number, timeframe: TimeframeType = 'H1', customDigits?: number) => {
+  const handleCreateProfile = (name: string, balance: number, symbols: SymbolType[], startDate: number, endDate: number, timeframe: TimeframeType = 'H1', customDigits?: number) => {
       const newProfile: TraderProfile = {
           id: Math.random().toString(36).substr(2, 9), name, createdAt: Date.now(), lastPlayed: Date.now(),
           timePlayed: 0,
@@ -328,15 +218,8 @@ const App: React.FC = () => {
           customDigits
       };
       setProfiles(prev => [...prev, newProfile]);
-      
-      // Save to Cloud immediately
-      if (userId) {
-          await saveUserSession(userId, newProfile);
-      }
-      
       handleSelectProfile(newProfile);
   };
-
 
   const handleSelectProfile = (profile: TraderProfile) => {
       setAccount(profile.account); setActiveSymbol(profile.activeSymbol); setActiveTimeframe(profile.activeTimeframe);
@@ -356,26 +239,12 @@ const App: React.FC = () => {
       setSimState(prev => ({ ...prev, isPlaying: false }));
   };
 
-  const handleDeleteProfile = async (id: string) => {
-      if (window.confirm('Are you sure you want to delete this session?')) {
-          setProfiles(prev => prev.filter(p => p.id !== id));
-          if (activeProfileId === id) { setActiveProfileId(null); setActiveProfile(null); }
-          
-          if (userId) {
-              await deleteUserSession(id);
-          }
-      }
+  const handleDeleteProfile = (id: string) => {
+      setProfiles(prev => prev.filter(p => p.id !== id));
+      if (activeProfileId === id) { setActiveProfileId(null); setActiveProfile(null); }
   };
 
-  const handleExitProfile = async () => {
-      // Save before exiting
-      if (userId && activeProfileId) {
-          const profileToSave = profiles.find(p => p.id === activeProfileId);
-          if (profileToSave) {
-              await saveUserSession(userId, profileToSave);
-          }
-      }
-
+  const handleExitProfile = () => {
       setSimState(prev => ({ ...prev, isPlaying: false })); setActiveProfileId(null); setActiveProfile(null);
       setAccount({ balance: INITIAL_BALANCE, equity: INITIAL_BALANCE, maxEquity: INITIAL_BALANCE, maxDrawdown: 0, history: [] });
       setChartData([]); setAllDrawings([]); setShowDataError(false); warmupDataRef.current = [];
@@ -481,10 +350,10 @@ const App: React.FC = () => {
                  if (activeCandle) {
                      const candleEndTime = activeCandle.time + tfSecs;
                      if (simTime < candleEndTime - 1) {
-                         const open = activeCandle.open;
-                         const close = lastKnownPriceRef.current || open;
-                         const high = Math.max(open, close);
-                         const low = Math.min(open, close);
+                         let open = activeCandle.open;
+                         let close = lastKnownPriceRef.current || open;
+                         let high = Math.max(open, close);
+                         let low = Math.min(open, close);
                          finalVisible[newIndex] = { ...activeCandle, open, high, low, close };
                          setCurrentRealTimePrice(close);
                      } else { 
@@ -903,10 +772,6 @@ const App: React.FC = () => {
           });
       }
   }, [tradingPrice, activeSymbol, simState.currentIndex]); 
-
-  if (!isAuthenticated) {
-    return <AuthScreen onSuccess={() => setIsAuthenticated(true)} />;
-  }
 
   if (!activeProfileId || !activeProfile) {
       return (

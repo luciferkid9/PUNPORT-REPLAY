@@ -662,7 +662,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                     }
                 },
                 rightPriceScale: { borderColor: '#3f3f46', autoScale: true },
-                crosshair: { mode: 0 },
+                crosshair: { mode: 1 },
                 width: container.clientWidth, height: container.clientHeight
              });
              indicatorChartRefs.current.set(type, chart);
@@ -812,8 +812,8 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                           <g key={`entry-${t.id}`} className="cursor-ns-resize group" style={{pointerEvents: 'auto'}}>
                               <line x1={0} y1={y} x2={width} y2={y} stroke="transparent" strokeWidth={20} style={{pointerEvents: 'stroke', cursor: 'ns-resize'}} onMouseDown={(e) => { e.stopPropagation(); setDragTrade({ id: t.id, type: 'ENTRY', startPrice: t.entryPrice, currentPrice: t.entryPrice }); }} onDoubleClick={(e) => { e.stopPropagation(); const newPrice = window.prompt("Enter new price:", t.entryPrice.toString()); if (newPrice && !isNaN(parseFloat(newPrice)) && onModifyOrderEntry) onModifyOrderEntry(t.id, parseFloat(newPrice)); }} />
                               <line x1={0} y1={y} x2={width} y2={y} stroke={color} strokeDasharray="4 2" strokeWidth={1} style={{pointerEvents: 'none'}} />
-                              <text x={10} y={y - 4} fill={color} fontSize="12" fontWeight="bold" style={{pointerEvents: 'none'}}>#{t.id.substr(0,4)}</text>
-                              <g transform={`translate(${xOffset}, ${y - 10})`} style={{pointerEvents: 'none'}}><rect width={labelWidth} height={20} rx={2} fill={color} /><text x={labelWidth/2} y={14} textAnchor="middle" fill="black" fontSize="12" fontWeight="bold">{label} {price.toFixed(pricePrecision)}</text></g>
+                              <text x={10} y={y - 4} fill={color} fontSize="10" fontWeight="bold" style={{pointerEvents: 'none'}}>#{t.id.substr(0,4)}</text>
+                              <g transform={`translate(${xOffset}, ${y - 10})`} style={{pointerEvents: 'none'}}><rect width={labelWidth} height={20} rx={2} fill={color} /><text x={labelWidth/2} y={14} textAnchor="middle" fill="black" fontSize="10" fontWeight="bold">{label} {price.toFixed(pricePrecision)}</text></g>
                           </g>
                       );
                   }
@@ -821,12 +821,12 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
               if (t.status === OrderStatus.OPEN) {
                    const entryY = safePriceCoord(t.entryPrice);
                    if (entryY > 0 && entryY < chartContainerRef.current!.clientHeight) {
-                       mainPaths.push(<text key={`entry-lbl-${t.id}`} x={10} y={entryY - 4} fill="#a1a1aa" fontSize="12" fontWeight="bold" style={{pointerEvents: 'none'}}>#{t.id.substr(0,4)}</text>);
+                       mainPaths.push(<text key={`entry-lbl-${t.id}`} x={10} y={entryY - 4} fill="#a1a1aa" fontSize="10" fontWeight="bold" style={{pointerEvents: 'none'}}>#{t.id.substr(0,4)}</text>);
                        if (t.stopLoss === 0 && (!isDraggingThis || dragTrade.type !== 'SL')) {
-                            mainPaths.push(<g key={`sl-add-${t.id}`} className="cursor-pointer select-none" style={{pointerEvents: 'auto'}} transform={`translate(${width - 115}, ${entryY - 10})`} onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); setDragTrade({ id: t.id, type: 'SL', startPrice: t.entryPrice, currentPrice: t.entryPrice }); }}><rect width="28" height="18" rx="4" fill="#18181b" stroke="#F23645" strokeWidth={1} /><text x="14" y="12" textAnchor="middle" fill="#F23645" fontSize="11" fontWeight="bold">SL+</text></g>);
+                            mainPaths.push(<g key={`sl-add-${t.id}`} className="cursor-pointer select-none" style={{pointerEvents: 'auto'}} transform={`translate(${width - 115}, ${entryY - 10})`} onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); setDragTrade({ id: t.id, type: 'SL', startPrice: t.entryPrice, currentPrice: t.entryPrice }); }}><rect width="28" height="18" rx="4" fill="#18181b" stroke="#F23645" strokeWidth={1} /><text x="14" y="12" textAnchor="middle" fill="#F23645" fontSize="9" fontWeight="bold">SL+</text></g>);
                        }
                        if (t.takeProfit === 0 && (!isDraggingThis || dragTrade.type !== 'TP')) {
-                            mainPaths.push(<g key={`tp-add-${t.id}`} className="cursor-pointer select-none" style={{pointerEvents: 'auto'}} transform={`translate(${width - 83}, ${entryY - 10})`} onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); setDragTrade({ id: t.id, type: 'TP', startPrice: t.entryPrice, currentPrice: t.entryPrice }); }}><rect width="28" height="18" rx="4" fill="#18181b" stroke="#089981" strokeWidth={1} /><text x="14" y="12" textAnchor="middle" fill="#089981" fontSize="11" fontWeight="bold">TP+</text></g>);
+                            mainPaths.push(<g key={`tp-add-${t.id}`} className="cursor-pointer select-none" style={{pointerEvents: 'auto'}} transform={`translate(${width - 83}, ${entryY - 10})`} onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); setDragTrade({ id: t.id, type: 'TP', startPrice: t.entryPrice, currentPrice: t.entryPrice }); }}><rect width="28" height="18" rx="4" fill="#18181b" stroke="#089981" strokeWidth={1} /><text x="14" y="12" textAnchor="middle" fill="#089981" fontSize="9" fontWeight="bold">TP+</text></g>);
                        }
                    }
               }
@@ -838,8 +838,8 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                         <g key={`sl-${t.id}`} className="cursor-ns-resize group" style={{pointerEvents: 'auto'}}>
                             <line x1={0} y1={y} x2={width} y2={y} stroke="transparent" strokeWidth={20} style={{pointerEvents: 'stroke', cursor: 'ns-resize'}} onMouseDown={(e) => { e.stopPropagation(); setDragTrade({ id: t.id, type: 'SL', startPrice: t.stopLoss, currentPrice: t.stopLoss }); }} />
                             <line x1={0} y1={y} x2={width} y2={y} stroke="#F23645" strokeDasharray="4 4" strokeWidth={1} style={{pointerEvents: 'none'}} />
-                            <text x={10} y={y - 4} fill="#F23645" fontSize="12" fontWeight="bold" style={{pointerEvents: 'none'}}>SL #{t.id.substr(0,4)}</text>
-                            <g transform={`translate(${xOffset}, ${y - 10})`} style={{pointerEvents: 'none'}}><rect width={labelWidth} height={20} rx={4} fill="#F23645" /><text x={labelWidth/2} y={14} textAnchor="middle" fill="white" fontSize="13" fontWeight="bold">SL {price.toFixed(pricePrecision)}</text></g>
+                            <text x={10} y={y - 4} fill="#F23645" fontSize="10" fontWeight="bold" style={{pointerEvents: 'none'}}>SL #{t.id.substr(0,4)}</text>
+                            <g transform={`translate(${xOffset}, ${y - 10})`} style={{pointerEvents: 'none'}}><rect width={labelWidth} height={20} rx={4} fill="#F23645" /><text x={labelWidth/2} y={14} textAnchor="middle" fill="white" fontSize="11" fontWeight="bold">SL {price.toFixed(pricePrecision)}</text></g>
                         </g>
                       );
                   }
@@ -852,8 +852,8 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                         <g key={`tp-${t.id}`} className="cursor-ns-resize group" style={{pointerEvents: 'auto'}}>
                             <line x1={0} y1={y} x2={width} y2={y} stroke="transparent" strokeWidth={20} style={{pointerEvents: 'stroke', cursor: 'ns-resize'}} onMouseDown={(e) => { e.stopPropagation(); setDragTrade({ id: t.id, type: 'TP', startPrice: t.takeProfit, currentPrice: t.takeProfit }); }} />
                             <line x1={0} y1={y} x2={width} y2={y} stroke="#089981" strokeDasharray="4 4" strokeWidth={1} style={{pointerEvents: 'none'}} />
-                            <text x={10} y={y - 4} fill="#089981" fontSize="12" fontWeight="bold" style={{pointerEvents: 'none'}}>TP #{t.id.substr(0,4)}</text>
-                            <g transform={`translate(${xOffset}, ${y - 10})`} style={{pointerEvents: 'none'}}><rect width={labelWidth} height={20} rx={4} fill="#089981" /><text x={labelWidth/2} y={14} textAnchor="middle" fill="white" fontSize="13" fontWeight="bold">TP {price.toFixed(pricePrecision)}</text></g>
+                            <text x={10} y={y - 4} fill="#089981" fontSize="10" fontWeight="bold" style={{pointerEvents: 'none'}}>TP #{t.id.substr(0,4)}</text>
+                            <g transform={`translate(${xOffset}, ${y - 10})`} style={{pointerEvents: 'none'}}><rect width={labelWidth} height={20} rx={4} fill="#089981" /><text x={labelWidth/2} y={14} textAnchor="middle" fill="white" fontSize="11" fontWeight="bold">TP {price.toFixed(pricePrecision)}</text></g>
                         </g>
                       );
                   }
@@ -1072,7 +1072,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                           paths.push(
                               <g key={`${d.id}-${dateStr}-${sess.key}`} onDoubleClick={handleDblClick}>
                                   <rect x={sx} y={sy} width={boxWidth} height={boxHeight} fill={sess.color} fillOpacity={boxOpacity} stroke="none" style={{pointerEvents: 'none'}} />
-                                  {d.killZoneConfig!.showLabel && <text x={sx} y={sy - 5} fill={sess.color} fontSize={12} fontWeight="bold" style={{pointerEvents: 'auto', cursor: 'pointer'}}>{sess.label}</text>}
+                                  {d.killZoneConfig!.showLabel && <text x={sx} y={sy - 5} fill={sess.color} fontSize={10} fontWeight="bold" style={{pointerEvents: 'auto', cursor: 'pointer'}}>{sess.label}</text>}
                                   {d.killZoneConfig!.showHighLowLines && (<><line x1={sx} y1={sy} x2={ex} y2={sy} stroke={sess.color} strokeWidth={1} style={{pointerEvents: 'none'}} /><line x1={sx} y1={ey} x2={ex} y2={ey} stroke={sess.color} strokeWidth={1} style={{pointerEvents: 'none'}} /></>)}
                                   {d.killZoneConfig!.extend && (<><line x1={ex} y1={sy} x2={width} y2={sy} stroke={sess.color} strokeWidth={1} strokeDasharray="4 2" opacity={0.7} style={{pointerEvents: 'none'}} /><line x1={ex} y1={ey} x2={width} y2={ey} stroke={sess.color} strokeWidth={1} strokeDasharray="4 2" opacity={0.7} style={{pointerEvents: 'none'}} /></>)}
                                   {d.killZoneConfig!.showAverage && (<line x1={sx} y1={(sy+ey)/2} x2={d.killZoneConfig!.extend ? width : ex} y2={(sy+ey)/2} stroke={sess.color} strokeWidth={1} strokeDasharray="2 2" opacity={0.7} style={{pointerEvents: 'none'}} />)}
@@ -1124,7 +1124,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                       const levelPrice = d.p2.price + (range * fib.level);
                       const ly = safePriceCoord(levelPrice);
                       if (ly > -5000) {
-                          paths.push(<g key={`${d.id}-${fib.level}`} onDoubleClick={handleDblClick} style={{pointerEvents: pointerEventsStyle}}><line x1={Math.min(x1, x2)} y1={ly} x2={Math.max(x1, x2)} y2={ly} stroke={fib.color} strokeWidth={1} strokeDasharray="4 4" opacity={0.8} /><text x={Math.max(x1,x2) + 5} y={ly + 3} fill={fib.color} fontSize={12} textAnchor="start">{fib.level} ({levelPrice.toFixed(pricePrecision)})</text></g>);
+                          paths.push(<g key={`${d.id}-${fib.level}`} onDoubleClick={handleDblClick} style={{pointerEvents: pointerEventsStyle}}><line x1={Math.min(x1, x2)} y1={ly} x2={Math.max(x1, x2)} y2={ly} stroke={fib.color} strokeWidth={1} strokeDasharray="4 4" opacity={0.8} /><text x={Math.max(x1,x2) + 5} y={ly + 3} fill={fib.color} fontSize={10} textAnchor="start">{fib.level} ({levelPrice.toFixed(pricePrecision)})</text></g>);
                       }
                   });
               }
@@ -1173,7 +1173,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                       const displayDigits = isJpy ? 3 : ((isXau || isXag) ? 2 : 5);
 
                       paths.push(
-                        <g key={`${d.id}-labels`} style={{pointerEvents: 'none', fontSize: '12px', fontWeight: 'bold'}}>
+                        <g key={`${d.id}-labels`} style={{pointerEvents: 'none', fontSize: '10px', fontWeight: 'bold'}}>
                             <text x={boxX + (boxW/2)} y={y1 + (isLong ? -5 : 12)} textAnchor="middle" fill="#a1a1aa">R: {rr.toFixed(2)}</text>
                             <text x={labelX} y={y1 + 3} fill="#a1a1aa">Entry: {d.p1.price.toFixed(displayDigits)}</text>
                             <text x={labelX} y={targetY + 3} fill="#22c55e">TP: {d.targetPrice.toFixed(displayDigits)} ({tpPips.toFixed(2)} pips)</text>

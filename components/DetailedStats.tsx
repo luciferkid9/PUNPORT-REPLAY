@@ -89,24 +89,8 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
   const avgWin = wins.length > 0 ? wins.reduce((a, b) => a + (b.pnl || 0), 0) / wins.length : 0;
   const avgLoss = losses.length > 0 ? losses.reduce((a, b) => a + (b.pnl || 0), 0) / losses.length : 0;
   
-  // Calculate Average R-Multiple of Winning Trades (User requested 1.745 style)
-  let totalWinR = 0;
-  let winRCount = 0;
-  closedTrades.forEach(t => {
-      if ((t.pnl || 0) <= 0) return; // Only winning trades
-      const effectiveSL = (t.initialStopLoss && t.initialStopLoss > 0) ? t.initialStopLoss : t.stopLoss;
-      const riskDist = effectiveSL > 0 ? Math.abs(t.entryPrice - effectiveSL) : 0;
-      if (riskDist > 0 && t.closePrice) {
-          let priceMove = t.closePrice - t.entryPrice;
-          if (t.side === 'SHORT') priceMove = -priceMove;
-          totalWinR += (priceMove / riskDist);
-          winRCount++;
-      }
-  });
-  const avgRR = winRCount > 0 ? (totalWinR / winRCount) : 0;
-  
   const expectancy = closedTrades.length > 0 ? totalPnL / closedTrades.length : 0;
-  
+
   let totalDuration = 0;
   closedTrades.forEach(t => { if (t.entryTime && t.closeTime) totalDuration += (t.closeTime - t.entryTime); });
   const avgDurationSeconds = closedTrades.length > 0 ? totalDuration / closedTrades.length : 0;
@@ -128,6 +112,24 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
 
       return parts.join(' ');
   };
+
+  let totalRMultiple = 0;
+  let countR = 0;
+  closedTrades.forEach(t => {
+      if ((t.pnl || 0) === 0) return;
+      const effectiveSL = (t.initialStopLoss && t.initialStopLoss > 0) ? t.initialStopLoss : t.stopLoss;
+      const riskDist = effectiveSL > 0 ? Math.abs(t.entryPrice - effectiveSL) : 0;
+
+      if (riskDist > 0 && t.closePrice) {
+          let priceMove = t.closePrice - t.entryPrice;
+          if (t.side === 'SHORT') priceMove = -priceMove;
+          
+          const r = priceMove / riskDist;
+          totalRMultiple += r;
+          countR++;
+      }
+  });
+  const avgRR = countR > 0 ? (totalRMultiple / countR) : 0;
   
   const initialBalance = balance - totalPnL;
   const gainPercent = ((balance - initialBalance) / initialBalance) * 100;
@@ -289,9 +291,8 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                     <div class="text-xl font-bold text-white">${formatDuration(avgDurationSeconds)}</div>
                 </div>
                 <div class="p-4 bg-white/5 rounded-xl border border-white/10">
-                    <div class="text-[10px] text-zinc-500 font-bold uppercase">Avg RR</div>
-                    <div class="text-xl font-bold text-white">${avgRR.toFixed(3)} R</div>
-                    <div class="text-[10px] text-zinc-600 mt-1">Avg Win R</div>
+                    <div class="text-[10px] text-zinc-500 font-bold uppercase">Avg R:R</div>
+                    <div class="text-xl font-bold text-white">${avgRR > 0 ? '+' : ''}${avgRR.toFixed(2)}R</div>
                 </div>
                 <div class="p-4 bg-white/5 rounded-xl border border-white/10">
                     <div class="text-[10px] text-zinc-500 font-bold uppercase">Profit Factor</div>
@@ -832,7 +833,7 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                 <MetricCard label="Win Rate" value={`${winRate.toFixed(1)}%`} color={winRate > 50 ? 'text-green-400' : 'text-red-400'} />
                 <MetricCard label="Expectancy" value={`$${formatCurrency(expectancy)}`} sub="Per Trade" color={expectancy > 0 ? 'text-green-400' : 'text-zinc-200'} />
                 <MetricCard label="Avg Duration" value={formatDuration(avgDurationSeconds)} sub="Holding Time" />
-                <MetricCard label="Avg RR" value={`${avgRR.toFixed(3)} R`} sub="Avg Win R-Multiple" />
+                <MetricCard label="Avg R:R" value={`${avgRR > 0 ? '+' : ''}${avgRR.toFixed(2)}R`} sub="Realized" />
                 <MetricCard label="Profit Factor" value={((wins.reduce((a,b)=>a+(b.pnl||0),0) / Math.abs(losses.reduce((a,b)=>a+(b.pnl||0),0))) || 0).toFixed(2)} />
                 <MetricCard label="Net Profit" value={`$${formatCurrency(totalPnL)}`} color={totalPnL >= 0 ? 'text-green-400' : 'text-red-400'} />
                 <MetricCard label="Gain" value={`${gainPercent.toFixed(2)}%`} color={gainPercent >= 0 ? 'text-green-400' : 'text-red-400'} />
