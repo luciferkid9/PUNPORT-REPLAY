@@ -1,7 +1,8 @@
 
 import React, { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react';
 import { createChart, ColorType, IChartApi, ISeriesApi, MouseEventParams, LogicalRange, IPriceLine, TickMarkType } from 'lightweight-charts';
-import { Candle, Trade, OrderStatus, ToolType, DrawingObject, Point, IndicatorConfig, DrawingSettings, SymbolType, SessionConfig, IndicatorType, DragTradeUpdate } from '../types';
+import { Candle, Trade, OrderStatus, ToolType, DrawingObject, Point, IndicatorConfig, DrawingSettings, SymbolType, SessionConfig, IndicatorType, DragTradeUpdate, LotSizeConfig } from '../types';
+import { LotSizeWidget } from './LotSizeWidget';
 
 interface Props {
   data: Candle[];
@@ -29,6 +30,9 @@ interface Props {
   drawings: DrawingObject[];
   selectedDrawingId: string | null;
   pricePrecision?: number; 
+  lotSizeConfig?: LotSizeConfig;
+  onLotSizeWidgetDoubleClick?: () => void;
+  currentPrice?: number;
 }
 
 export interface ChartRef {
@@ -68,7 +72,8 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
     activeSymbol, interval,
     emaDataMap, rsiData, macdData, 
     onDrawingCreate, onDrawingUpdate, onDrawingEdit, onDrawingSelect, onDrawingDelete, onModifyTrade, onModifyOrderEntry, onTradeDrag, onLoadMore, onIndicatorDblClick, onRemoveIndicator, drawings, selectedDrawingId,
-    pricePrecision = 5
+    pricePrecision = 5,
+    lotSizeConfig, onLotSizeWidgetDoubleClick, currentPrice
 }, ref) => {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -119,6 +124,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
   const onDrawingCreateRef = useRef(onDrawingCreate);
   const onDrawingSelectRef = useRef(onDrawingSelect);
   const intervalRef = useRef(interval);
+  const tempPointRef = useRef(tempPoint);
 
   const dataRef = useRef(data);
   useEffect(() => { dataRef.current = data; }, [data]);
@@ -130,6 +136,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
   useEffect(() => { onDrawingCreateRef.current = onDrawingCreate; }, [onDrawingCreate]);
   useEffect(() => { onDrawingSelectRef.current = onDrawingSelect; }, [onDrawingSelect]);
   useEffect(() => { intervalRef.current = interval; }, [interval]);
+  useEffect(() => { tempPointRef.current = tempPoint; }, [tempPoint]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -277,7 +284,9 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                       onTradeDrag({ id: dragTrade.id, type: dragTrade.type, price: price });
                   }
               }
-          } catch(e) {}
+          } catch(e) {
+              // Ignore drag errors
+          }
       }
 
       // Drawing Dragging Logic
@@ -288,26 +297,33 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                   const useMagnet = dragTarget.point !== 'all' && dragTarget.point !== 'target' && dragTarget.point !== 'stop' && dragTarget.point !== 'entry';
                   const finalPrice = useMagnet ? getMagnetPrice(time, rawPrice, pane) : rawPrice;
                   
+                  const sym = activeSymbolRef.current || '';
+                  const isJpy = sym.includes('JPY');
+                  const isXau = sym.includes('XAU');
+                  const isXag = sym.includes('XAG');
+                  const digits = isJpy ? 3 : ((isXau || isXag) ? 2 : 5);
+                  const roundPrice = (p: number) => Math.round(p * Math.pow(10, digits)) / Math.pow(10, digits);
+
                   const newObj = { ...activeDragObject };
                   const timeDiff = time - dragTarget.initialMouse.time;
                   const priceDiff = finalPrice - dragTarget.initialMouse.price;
 
                   if (dragTarget.point === 'all') {
-                      newObj.p1 = { time: dragTarget.initialP1.time + timeDiff, price: dragTarget.initialP1.price + priceDiff };
-                      newObj.p2 = { time: dragTarget.initialP2.time + timeDiff, price: dragTarget.initialP2.price + priceDiff };
-                      if (dragTarget.initialTarget !== undefined && newObj.targetPrice !== undefined) newObj.targetPrice = dragTarget.initialTarget + priceDiff;
-                      if (dragTarget.initialStop !== undefined && newObj.stopPrice !== undefined) newObj.stopPrice = dragTarget.initialStop + priceDiff;
+                      newObj.p1 = { time: dragTarget.initialP1.time + timeDiff, price: roundPrice(dragTarget.initialP1.price + priceDiff) };
+                      newObj.p2 = { time: dragTarget.initialP2.time + timeDiff, price: roundPrice(dragTarget.initialP2.price + priceDiff) };
+                      if (dragTarget.initialTarget !== undefined && newObj.targetPrice !== undefined) newObj.targetPrice = roundPrice(dragTarget.initialTarget + priceDiff);
+                      if (dragTarget.initialStop !== undefined && newObj.stopPrice !== undefined) newObj.stopPrice = roundPrice(dragTarget.initialStop + priceDiff);
                   } else if (dragTarget.point === 'p1') {
-                      newObj.p1 = { time: time, price: finalPrice };
+                      newObj.p1 = { time: time, price: roundPrice(finalPrice) };
                   } else if (dragTarget.point === 'p2') {
-                      newObj.p2 = { time: time, price: finalPrice };
+                      newObj.p2 = { time: time, price: roundPrice(finalPrice) };
                   } else if (dragTarget.point === 'target') {
-                      newObj.targetPrice = rawPrice; 
+                      newObj.targetPrice = roundPrice(rawPrice); 
                   } else if (dragTarget.point === 'stop') {
-                      newObj.stopPrice = rawPrice; 
+                      newObj.stopPrice = roundPrice(rawPrice); 
                   } else if (dragTarget.point === 'entry') {
-                      newObj.p1 = { ...newObj.p1, price: rawPrice };
-                      newObj.p2 = { ...newObj.p2, price: rawPrice }; 
+                      newObj.p1 = { ...newObj.p1, price: roundPrice(rawPrice) };
+                      newObj.p2 = { ...newObj.p2, price: roundPrice(rawPrice) }; 
                   }
                   setActiveDragObject(newObj);
               }
@@ -400,7 +416,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
             
             if (!time) return;
 
-            let rawPrice = series.coordinateToPrice(param.point.y);
+            const rawPrice = series.coordinateToPrice(param.point.y);
             if (rawPrice === null) return;
             const finalPrice = getMagnetPrice(time, rawPrice, pane);
             const clickedPoint: Point = { time: time, price: finalPrice };
@@ -430,47 +446,49 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
             if (isPositionTool && pane !== 'MAIN') return; 
 
             if (['TRENDLINE', 'FIB', 'LONG_POSITION', 'SHORT_POSITION', 'RECTANGLE'].includes(activeToolRef.current)) {
-                setTempPoint(prev => {
-                    if (!prev || prev.pane !== pane) return { point: clickedPoint, pane };
-                    
-                    if (onDrawingCreateRef.current) {
-                        const isLong = activeToolRef.current === 'LONG_POSITION';
-                        const isShort = activeToolRef.current === 'SHORT_POSITION';
-                        let targetPrice = undefined, stopPrice = undefined;
+                const prev = tempPointRef.current;
+                if (!prev || prev.pane !== pane) {
+                    setTempPoint({ point: clickedPoint, pane });
+                    return;
+                }
+                
+                if (onDrawingCreateRef.current) {
+                    const isLong = activeToolRef.current === 'LONG_POSITION';
+                    const isShort = activeToolRef.current === 'SHORT_POSITION';
+                    let targetPrice = undefined, stopPrice = undefined;
 
-                        if (isLong || isShort) {
-                            const entryP = prev.point.price;
-                            const currentP = clickedPoint.price;
-                            const dist = Math.abs(currentP - entryP);
-                            const minDiff = entryP * 0.0005;
-                            
-                            if (dist < minDiff) {
-                                const risk = entryP * 0.002;
-                                stopPrice = isLong ? entryP - risk : entryP + risk;
-                                targetPrice = isLong ? entryP + (risk * 2) : entryP - (risk * 2);
-                            } else {
-                                if (isLong) {
-                                    if (currentP > entryP) { targetPrice = currentP; stopPrice = entryP - (dist * 0.5); } 
-                                    else { stopPrice = currentP; targetPrice = entryP + (dist * 2); }
-                                } else { 
-                                    if (currentP < entryP) { targetPrice = currentP; stopPrice = entryP + (dist * 0.5); } 
-                                    else { stopPrice = currentP; targetPrice = entryP - (dist * 2); }
-                                }
+                    if (isLong || isShort) {
+                        const entryP = prev.point.price;
+                        const currentP = clickedPoint.price;
+                        const dist = Math.abs(currentP - entryP);
+                        const minDiff = entryP * 0.0005;
+                        
+                        if (dist < minDiff) {
+                            const risk = entryP * 0.002;
+                            stopPrice = isLong ? entryP - risk : entryP + risk;
+                            targetPrice = isLong ? entryP + (risk * 2) : entryP - (risk * 2);
+                        } else {
+                            if (isLong) {
+                                if (currentP > entryP) { targetPrice = currentP; stopPrice = entryP - (dist * 0.5); } 
+                                else { stopPrice = currentP; targetPrice = entryP + (dist * 2); }
+                            } else { 
+                                if (currentP < entryP) { targetPrice = currentP; stopPrice = entryP + (dist * 0.5); } 
+                                else { stopPrice = currentP; targetPrice = entryP - (dist * 2); }
                             }
                         }
-                        
-                        onDrawingCreateRef.current({
-                            id: Math.random().toString(36).substr(2, 9),
-                            symbol: activeSymbolRef.current,
-                            type: activeToolRef.current,
-                            p1: prev.point, p2: clickedPoint, visible: true, locked: false,
-                            color: drawingSettingsRef.current.color, lineWidth: drawingSettingsRef.current.lineWidth, lineStyle: drawingSettingsRef.current.lineStyle,
-                            targetPrice, stopPrice,
-                            pane: pane 
-                        });
                     }
-                    return null;
-                });
+                    
+                    onDrawingCreateRef.current({
+                        id: Math.random().toString(36).substr(2, 9),
+                        symbol: activeSymbolRef.current,
+                        type: activeToolRef.current,
+                        p1: prev.point, p2: clickedPoint, visible: true, locked: false,
+                        color: drawingSettingsRef.current.color, lineWidth: drawingSettingsRef.current.lineWidth, lineStyle: drawingSettingsRef.current.lineStyle,
+                        targetPrice, stopPrice,
+                        pane: pane 
+                    });
+                }
+                setTempPoint(null);
             }
         }
   };
@@ -580,7 +598,11 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
     entryLinesRef.current.forEach((line, id) => {
         const trade = trades.find(t => t.id === id);
         if (!trade || trade.status === OrderStatus.CLOSED || trade.status === OrderStatus.PENDING) {
-             try { candleSeriesRef.current?.removePriceLine(line); } catch(e) {}
+             try { 
+                 candleSeriesRef.current?.removePriceLine(line); 
+             } catch(e) {
+                 // Ignore removal errors
+             }
              entryLinesRef.current.delete(id);
         }
     });
@@ -592,7 +614,9 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                     price: t.entryPrice, color: '#787b86', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: `ENTRY`
                 });
                 entryLinesRef.current.set(t.id, line);
-            } catch(e) {}
+            } catch(e) {
+                // Ignore series removal errors
+            }
         } 
     });
   }, [trades, data, pricePrecision]); 
@@ -638,7 +662,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                     }
                 },
                 rightPriceScale: { borderColor: '#3f3f46', autoScale: true },
-                crosshair: { mode: 1 },
+                crosshair: { mode: 0 },
                 width: container.clientWidth, height: container.clientHeight
              });
              indicatorChartRefs.current.set(type, chart);
@@ -764,7 +788,12 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
       if (chartRef.current && candleSeriesRef.current && chartContainerRef.current) {
           const mainPaths = panePaths.MAIN;
           const safePriceCoord = (price: number) => { 
-             try { const coord = candleSeriesRef.current!.priceToCoordinate(price); return coord === null ? -10000 : coord; } catch(e) { return -10000; }
+              try { 
+                  const coord = candleSeriesRef.current!.priceToCoordinate(price); 
+                  return coord === null ? -10000 : coord; 
+              } catch(e) { 
+                  return -10000; 
+              }
           };
 
           // ... (Trade lines rendering logic preserved) ...
@@ -783,8 +812,8 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                           <g key={`entry-${t.id}`} className="cursor-ns-resize group" style={{pointerEvents: 'auto'}}>
                               <line x1={0} y1={y} x2={width} y2={y} stroke="transparent" strokeWidth={20} style={{pointerEvents: 'stroke', cursor: 'ns-resize'}} onMouseDown={(e) => { e.stopPropagation(); setDragTrade({ id: t.id, type: 'ENTRY', startPrice: t.entryPrice, currentPrice: t.entryPrice }); }} onDoubleClick={(e) => { e.stopPropagation(); const newPrice = window.prompt("Enter new price:", t.entryPrice.toString()); if (newPrice && !isNaN(parseFloat(newPrice)) && onModifyOrderEntry) onModifyOrderEntry(t.id, parseFloat(newPrice)); }} />
                               <line x1={0} y1={y} x2={width} y2={y} stroke={color} strokeDasharray="4 2" strokeWidth={1} style={{pointerEvents: 'none'}} />
-                              <text x={10} y={y - 4} fill={color} fontSize="10" fontWeight="bold" style={{pointerEvents: 'none'}}>#{t.id.substr(0,4)}</text>
-                              <g transform={`translate(${xOffset}, ${y - 10})`} style={{pointerEvents: 'none'}}><rect width={labelWidth} height={20} rx={2} fill={color} /><text x={labelWidth/2} y={14} textAnchor="middle" fill="black" fontSize="10" fontWeight="bold">{label} {price.toFixed(pricePrecision)}</text></g>
+                              <text x={10} y={y - 4} fill={color} fontSize="12" fontWeight="bold" style={{pointerEvents: 'none'}}>#{t.id.substr(0,4)}</text>
+                              <g transform={`translate(${xOffset}, ${y - 10})`} style={{pointerEvents: 'none'}}><rect width={labelWidth} height={20} rx={2} fill={color} /><text x={labelWidth/2} y={14} textAnchor="middle" fill="black" fontSize="12" fontWeight="bold">{label} {price.toFixed(pricePrecision)}</text></g>
                           </g>
                       );
                   }
@@ -792,12 +821,12 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
               if (t.status === OrderStatus.OPEN) {
                    const entryY = safePriceCoord(t.entryPrice);
                    if (entryY > 0 && entryY < chartContainerRef.current!.clientHeight) {
-                       mainPaths.push(<text key={`entry-lbl-${t.id}`} x={10} y={entryY - 4} fill="#a1a1aa" fontSize="10" fontWeight="bold" style={{pointerEvents: 'none'}}>#{t.id.substr(0,4)}</text>);
+                       mainPaths.push(<text key={`entry-lbl-${t.id}`} x={10} y={entryY - 4} fill="#a1a1aa" fontSize="12" fontWeight="bold" style={{pointerEvents: 'none'}}>#{t.id.substr(0,4)}</text>);
                        if (t.stopLoss === 0 && (!isDraggingThis || dragTrade.type !== 'SL')) {
-                            mainPaths.push(<g key={`sl-add-${t.id}`} className="cursor-pointer select-none" style={{pointerEvents: 'auto'}} transform={`translate(${width - 115}, ${entryY - 10})`} onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); setDragTrade({ id: t.id, type: 'SL', startPrice: t.entryPrice, currentPrice: t.entryPrice }); }}><rect width="28" height="18" rx="4" fill="#18181b" stroke="#F23645" strokeWidth={1} /><text x="14" y="12" textAnchor="middle" fill="#F23645" fontSize="9" fontWeight="bold">SL+</text></g>);
+                            mainPaths.push(<g key={`sl-add-${t.id}`} className="cursor-pointer select-none" style={{pointerEvents: 'auto'}} transform={`translate(${width - 115}, ${entryY - 10})`} onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); setDragTrade({ id: t.id, type: 'SL', startPrice: t.entryPrice, currentPrice: t.entryPrice }); }}><rect width="28" height="18" rx="4" fill="#18181b" stroke="#F23645" strokeWidth={1} /><text x="14" y="12" textAnchor="middle" fill="#F23645" fontSize="11" fontWeight="bold">SL+</text></g>);
                        }
                        if (t.takeProfit === 0 && (!isDraggingThis || dragTrade.type !== 'TP')) {
-                            mainPaths.push(<g key={`tp-add-${t.id}`} className="cursor-pointer select-none" style={{pointerEvents: 'auto'}} transform={`translate(${width - 83}, ${entryY - 10})`} onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); setDragTrade({ id: t.id, type: 'TP', startPrice: t.entryPrice, currentPrice: t.entryPrice }); }}><rect width="28" height="18" rx="4" fill="#18181b" stroke="#089981" strokeWidth={1} /><text x="14" y="12" textAnchor="middle" fill="#089981" fontSize="9" fontWeight="bold">TP+</text></g>);
+                            mainPaths.push(<g key={`tp-add-${t.id}`} className="cursor-pointer select-none" style={{pointerEvents: 'auto'}} transform={`translate(${width - 83}, ${entryY - 10})`} onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); setDragTrade({ id: t.id, type: 'TP', startPrice: t.entryPrice, currentPrice: t.entryPrice }); }}><rect width="28" height="18" rx="4" fill="#18181b" stroke="#089981" strokeWidth={1} /><text x="14" y="12" textAnchor="middle" fill="#089981" fontSize="11" fontWeight="bold">TP+</text></g>);
                        }
                    }
               }
@@ -809,8 +838,8 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                         <g key={`sl-${t.id}`} className="cursor-ns-resize group" style={{pointerEvents: 'auto'}}>
                             <line x1={0} y1={y} x2={width} y2={y} stroke="transparent" strokeWidth={20} style={{pointerEvents: 'stroke', cursor: 'ns-resize'}} onMouseDown={(e) => { e.stopPropagation(); setDragTrade({ id: t.id, type: 'SL', startPrice: t.stopLoss, currentPrice: t.stopLoss }); }} />
                             <line x1={0} y1={y} x2={width} y2={y} stroke="#F23645" strokeDasharray="4 4" strokeWidth={1} style={{pointerEvents: 'none'}} />
-                            <text x={10} y={y - 4} fill="#F23645" fontSize="10" fontWeight="bold" style={{pointerEvents: 'none'}}>SL #{t.id.substr(0,4)}</text>
-                            <g transform={`translate(${xOffset}, ${y - 10})`} style={{pointerEvents: 'none'}}><rect width={labelWidth} height={20} rx={4} fill="#F23645" /><text x={labelWidth/2} y={14} textAnchor="middle" fill="white" fontSize="11" fontWeight="bold">SL {price.toFixed(pricePrecision)}</text></g>
+                            <text x={10} y={y - 4} fill="#F23645" fontSize="12" fontWeight="bold" style={{pointerEvents: 'none'}}>SL #{t.id.substr(0,4)}</text>
+                            <g transform={`translate(${xOffset}, ${y - 10})`} style={{pointerEvents: 'none'}}><rect width={labelWidth} height={20} rx={4} fill="#F23645" /><text x={labelWidth/2} y={14} textAnchor="middle" fill="white" fontSize="13" fontWeight="bold">SL {price.toFixed(pricePrecision)}</text></g>
                         </g>
                       );
                   }
@@ -823,8 +852,8 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                         <g key={`tp-${t.id}`} className="cursor-ns-resize group" style={{pointerEvents: 'auto'}}>
                             <line x1={0} y1={y} x2={width} y2={y} stroke="transparent" strokeWidth={20} style={{pointerEvents: 'stroke', cursor: 'ns-resize'}} onMouseDown={(e) => { e.stopPropagation(); setDragTrade({ id: t.id, type: 'TP', startPrice: t.takeProfit, currentPrice: t.takeProfit }); }} />
                             <line x1={0} y1={y} x2={width} y2={y} stroke="#089981" strokeDasharray="4 4" strokeWidth={1} style={{pointerEvents: 'none'}} />
-                            <text x={10} y={y - 4} fill="#089981" fontSize="10" fontWeight="bold" style={{pointerEvents: 'none'}}>TP #{t.id.substr(0,4)}</text>
-                            <g transform={`translate(${xOffset}, ${y - 10})`} style={{pointerEvents: 'none'}}><rect width={labelWidth} height={20} rx={4} fill="#089981" /><text x={labelWidth/2} y={14} textAnchor="middle" fill="white" fontSize="11" fontWeight="bold">TP {price.toFixed(pricePrecision)}</text></g>
+                            <text x={10} y={y - 4} fill="#089981" fontSize="12" fontWeight="bold" style={{pointerEvents: 'none'}}>TP #{t.id.substr(0,4)}</text>
+                            <g transform={`translate(${xOffset}, ${y - 10})`} style={{pointerEvents: 'none'}}><rect width={labelWidth} height={20} rx={4} fill="#089981" /><text x={labelWidth/2} y={14} textAnchor="middle" fill="white" fontSize="13" fontWeight="bold">TP {price.toFixed(pricePrecision)}</text></g>
                         </g>
                       );
                   }
@@ -843,7 +872,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
           // ... (Ghost rendering preserved) ...
           if (tempPoint.pane === hoverPoint.pane) {
               const ghostId = 'ghost-preview';
-              let ghostDrawing: DrawingObject = {
+              const ghostDrawing: DrawingObject = {
                   id: ghostId, symbol: activeSymbolRef.current, type: activeToolRef.current,
                   p1: tempPoint.point, p2: hoverPoint.point, visible: true, locked: false,
                   color: drawingSettingsRef.current.color, lineWidth: drawingSettingsRef.current.lineWidth, lineStyle: drawingSettingsRef.current.lineStyle,
@@ -935,7 +964,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
              const diff = time - leftCandle.time;
              
              // Use interval for projection if gap is huge, otherwise proportional
-             let ratio = (range > candleInterval * 1.5) 
+             const ratio = (range > candleInterval * 1.5) 
                 ? diff / candleInterval  // Treat gap as series of empty candles
                 : diff / range;          // Interpolate standard gap
                 
@@ -944,7 +973,12 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
 
           const safePriceCoord = (price: number) => { 
               if (price === null || isNaN(price)) return -10000;
-              try { const coord = series.priceToCoordinate(price); return coord === null ? -10000 : coord; } catch(e) { return -10000; }
+              try { 
+                  const coord = series.priceToCoordinate(price); 
+                  return coord === null ? -10000 : coord; 
+              } catch(e) { 
+                  return -10000; 
+              }
           };
 
           const x1Val = getCoord(d.p1.time);
@@ -1016,8 +1050,12 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                               if (c.high > maxH) maxH = c.high;
                               if (c.low < minL) minL = c.low;
                           });
-                          // Snap logic maintained for High TFs
-                          if (tfSeconds > 3600) startTs = relevantData[0].time;
+                          // Snap logic maintained for High TFs (H1 and above)
+                          if (tfSeconds >= 3600) {
+                              startTs = relevantData[0].time;
+                              // Also snap endTs to the end of the last overlapping candle
+                              endTs = relevantData[relevantData.length - 1].time + tfSeconds;
+                          }
                       } else { return; }
                       
                       const sxVal = getCoord(startTs);
@@ -1034,7 +1072,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                           paths.push(
                               <g key={`${d.id}-${dateStr}-${sess.key}`} onDoubleClick={handleDblClick}>
                                   <rect x={sx} y={sy} width={boxWidth} height={boxHeight} fill={sess.color} fillOpacity={boxOpacity} stroke="none" style={{pointerEvents: 'none'}} />
-                                  {d.killZoneConfig!.showLabel && <text x={sx} y={sy - 5} fill={sess.color} fontSize={10} fontWeight="bold" style={{pointerEvents: 'auto', cursor: 'pointer'}}>{sess.label}</text>}
+                                  {d.killZoneConfig!.showLabel && <text x={sx} y={sy - 5} fill={sess.color} fontSize={12} fontWeight="bold" style={{pointerEvents: 'auto', cursor: 'pointer'}}>{sess.label}</text>}
                                   {d.killZoneConfig!.showHighLowLines && (<><line x1={sx} y1={sy} x2={ex} y2={sy} stroke={sess.color} strokeWidth={1} style={{pointerEvents: 'none'}} /><line x1={sx} y1={ey} x2={ex} y2={ey} stroke={sess.color} strokeWidth={1} style={{pointerEvents: 'none'}} /></>)}
                                   {d.killZoneConfig!.extend && (<><line x1={ex} y1={sy} x2={width} y2={sy} stroke={sess.color} strokeWidth={1} strokeDasharray="4 2" opacity={0.7} style={{pointerEvents: 'none'}} /><line x1={ex} y1={ey} x2={width} y2={ey} stroke={sess.color} strokeWidth={1} strokeDasharray="4 2" opacity={0.7} style={{pointerEvents: 'none'}} /></>)}
                                   {d.killZoneConfig!.showAverage && (<line x1={sx} y1={(sy+ey)/2} x2={d.killZoneConfig!.extend ? width : ex} y2={(sy+ey)/2} stroke={sess.color} strokeWidth={1} strokeDasharray="2 2" opacity={0.7} style={{pointerEvents: 'none'}} />)}
@@ -1086,7 +1124,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                       const levelPrice = d.p2.price + (range * fib.level);
                       const ly = safePriceCoord(levelPrice);
                       if (ly > -5000) {
-                          paths.push(<g key={`${d.id}-${fib.level}`} onDoubleClick={handleDblClick} style={{pointerEvents: pointerEventsStyle}}><line x1={Math.min(x1, x2)} y1={ly} x2={Math.max(x1, x2)} y2={ly} stroke={fib.color} strokeWidth={1} strokeDasharray="4 4" opacity={0.8} /><text x={Math.max(x1,x2) + 5} y={ly + 3} fill={fib.color} fontSize={10} textAnchor="start">{fib.level} ({levelPrice.toFixed(pricePrecision)})</text></g>);
+                          paths.push(<g key={`${d.id}-${fib.level}`} onDoubleClick={handleDblClick} style={{pointerEvents: pointerEventsStyle}}><line x1={Math.min(x1, x2)} y1={ly} x2={Math.max(x1, x2)} y2={ly} stroke={fib.color} strokeWidth={1} strokeDasharray="4 4" opacity={0.8} /><text x={Math.max(x1,x2) + 5} y={ly + 3} fill={fib.color} fontSize={12} textAnchor="start">{fib.level} ({levelPrice.toFixed(pricePrecision)})</text></g>);
                       }
                   });
               }
@@ -1126,10 +1164,22 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                       const sym = activeSymbolRef.current || '';
                       const isJpy = sym.includes('JPY');
                       const isXau = sym.includes('XAU');
-                      const pipScalar = isJpy ? 0.01 : (isXau ? 0.01 : 0.0001);
+                      const isXag = sym.includes('XAG');
+                      const pipScalar = isJpy ? 0.01 : ((isXau || isXag) ? 0.01 : 0.0001);
                       const tpPips = rewardAmt / pipScalar;
                       const slPips = riskAmt / pipScalar;
-                      paths.push(<g key={`${d.id}-labels`} style={{pointerEvents: 'none', fontSize: '10px', fontWeight: 'bold'}}><text x={boxX + (boxW/2)} y={y1 + (isLong ? -5 : 12)} textAnchor="middle" fill="#a1a1aa">R: {rr.toFixed(2)}</text><text x={labelX} y={y1 + 3} fill="#a1a1aa">Entry: {d.p1.price.toFixed(pricePrecision)}</text><text x={labelX} y={targetY + 3} fill="#22c55e">TP: {d.targetPrice.toFixed(pricePrecision)} ({tpPips.toFixed(1)} pips)</text><text x={labelX} y={stopY + 3} fill="#ef4444">SL: {d.stopPrice.toFixed(pricePrecision)} ({slPips.toFixed(1)} pips)</text></g>);
+                      
+                      // Use consistent digits for price display
+                      const displayDigits = isJpy ? 3 : ((isXau || isXag) ? 2 : 5);
+
+                      paths.push(
+                        <g key={`${d.id}-labels`} style={{pointerEvents: 'none', fontSize: '12px', fontWeight: 'bold'}}>
+                            <text x={boxX + (boxW/2)} y={y1 + (isLong ? -5 : 12)} textAnchor="middle" fill="#a1a1aa">R: {rr.toFixed(2)}</text>
+                            <text x={labelX} y={y1 + 3} fill="#a1a1aa">Entry: {d.p1.price.toFixed(displayDigits)}</text>
+                            <text x={labelX} y={targetY + 3} fill="#22c55e">TP: {d.targetPrice.toFixed(displayDigits)} ({tpPips.toFixed(2)} pips)</text>
+                            <text x={labelX} y={stopY + 3} fill="#ef4444">SL: {d.stopPrice.toFixed(displayDigits)} ({slPips.toFixed(2)} pips)</text>
+                        </g>
+                      );
                   }
               }
           }
@@ -1145,7 +1195,14 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
       const ro = new ResizeObserver(() => requestAnimationFrame(updateDrawings));
       if (chartContainerRef.current) ro.observe(chartContainerRef.current);
       updateDrawings();
-      return () => { try { chartRef.current?.timeScale().unsubscribeVisibleLogicalRangeChange(handleVisibleRangeChange); } catch(e) {} ro.disconnect(); };
+      return () => { 
+          try { 
+              chartRef.current?.timeScale().unsubscribeVisibleLogicalRangeChange(handleVisibleRangeChange); 
+          } catch(e) {
+              // Ignore unsubscribe errors on unmount
+          } 
+          ro.disconnect(); 
+      };
   }, [drawings, data, activeTool, selectedDrawingId, dragTarget, tempPoint, mousePos, activeDragObject, pricePrecision, dragTrade, trades, hoverPoint, indicatorValues]);
 
   return (
@@ -1162,6 +1219,15 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
               ))}
           </div>
           <svg className="absolute top-0 left-0 w-full h-full z-10 overflow-hidden" style={{pointerEvents: 'none'}}>{svgPaths.MAIN}</svg>
+          
+          {lotSizeConfig && onLotSizeWidgetDoubleClick && currentPrice !== undefined && (
+              <LotSizeWidget 
+                  config={lotSizeConfig} 
+                  activeSymbol={activeSymbol} 
+                  currentPrice={currentPrice} 
+                  onDoubleClick={onLotSizeWidgetDoubleClick} 
+              />
+          )}
       </div>
 
       {/* INDICATORS */}

@@ -46,7 +46,9 @@ export const AccountDashboard: React.FC<Props> = ({
             } else {
                 dateInputRef.current.click();
             }
-        } catch (e) {}
+        } catch (e) {
+            // Ignore picker errors
+        }
     }
   };
 
@@ -72,6 +74,18 @@ export const AccountDashboard: React.FC<Props> = ({
                 title="Back to Profiles"
             >
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" /></svg>
+            </button>
+
+            <button 
+                onClick={async () => {
+                    const { supabase } = await import('../services/supabase');
+                    await supabase.auth.signOut();
+                    window.location.reload();
+                }}
+                className="p-2.5 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 transition-all active:scale-95 shrink-0"
+                title="Logout"
+            >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
             </button>
 
             <h1 className="text-xl font-black text-zinc-200 tracking-wider hidden lg:block shrink-0">
@@ -107,7 +121,7 @@ export const AccountDashboard: React.FC<Props> = ({
             </div>
 
             <div className="h-10 w-[1px] bg-white/5 mx-1 hidden md:block"></div>
-            <div className="hidden md:flex space-x-6 shrink-0">
+            <div className="hidden lg:flex space-x-6 shrink-0">
                <div className="flex flex-col">
                 <span className="text-zinc-500 text-[10px] font-bold tracking-widest uppercase mb-0.5">Balance</span>
                 <span className="font-mono text-sm font-bold text-zinc-200">${formatCurrency(account.balance)}</span>
@@ -120,22 +134,22 @@ export const AccountDashboard: React.FC<Props> = ({
           </div>
 
           {/* Right Group: Info & Settings */}
-          <div className="flex items-center space-x-3 bg-black/20 p-1.5 rounded-xl border border-white/5 shadow-inner shrink min-w-0 overflow-hidden ml-2">
+          <div className="flex items-center gap-2 bg-black/20 p-1 rounded-xl border border-white/5 shadow-inner shrink min-w-0 ml-2">
             
             <button 
                  onClick={onToggleStats}
-                 className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/5 rounded-lg text-xs font-bold text-white uppercase tracking-wider flex items-center space-x-2 transition-all shrink-0"
+                 className="px-3 py-2 bg-white/5 hover:bg-white/10 border border-white/5 rounded-lg text-xs font-bold text-white uppercase tracking-wider flex items-center space-x-2 transition-all shrink-0"
             >
                  <svg className="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
-                 <span className="hidden sm:inline">Stats</span>
+                 <span className="hidden xl:inline">Stats</span>
             </button>
 
-            <div className="w-[1px] h-8 bg-white/10 mx-1 hidden sm:block"></div>
+            <div className="w-[1px] h-8 bg-white/10 mx-0.5 hidden sm:block"></div>
 
-            <div className="px-3 flex flex-col justify-center border-r border-white/10 relative group shrink min-w-0 hidden sm:flex">
-                <span className="text-[9px] text-zinc-500 font-bold uppercase mb-0.5 truncate">Replay Date</span>
+            <div className="px-2 flex flex-col justify-center border-r border-white/10 relative group shrink-0 hidden sm:flex">
+                <span className="text-[9px] text-zinc-500 font-bold uppercase mb-0.5 truncate hidden lg:block">Replay Date</span>
                 <div className="flex items-center space-x-2 cursor-pointer" onClick={handleCalendarClick}>
-                    <span className="text-xs font-mono font-bold text-amber-400 min-w-[100px] text-center hover:text-amber-300 transition-colors truncate">{dateStr}</span>
+                    <span className="text-[11px] lg:text-xs font-mono font-bold text-amber-400 min-w-[110px] text-center hover:text-amber-300 transition-colors truncate">{dateStr}</span>
                     <svg className="w-3.5 h-3.5 text-zinc-500 group-hover:text-amber-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
                 </div>
                 <input 
@@ -147,18 +161,18 @@ export const AccountDashboard: React.FC<Props> = ({
             </div>
 
             {/* Asset & TF */}
-            <div className="flex items-center space-x-3 shrink-0">
-                <div className="hidden md:flex flex-col">
-                    <span className="text-[9px] text-zinc-500 font-bold uppercase mb-0.5">Asset</span>
-                    <div className="flex items-center space-x-2 bg-white/5 border border-white/5 rounded-lg px-3 py-1.5">
-                        <span className={`w-2 h-2 rounded-full shadow-[0_0_6px_rgba(59,130,246,0.6)] ${activeSymbol === 'XAUUSD' ? 'bg-yellow-500' : 'bg-blue-500'}`}></span>
-                        <span className="text-xs font-black text-white tracking-wide">{activeSymbol}</span>
+            <div className="flex items-center gap-2 shrink-0">
+                <div className="hidden sm:flex flex-col">
+                    <span className="text-[9px] text-zinc-500 font-bold uppercase mb-0.5 hidden lg:block">Asset</span>
+                    <div className="flex items-center space-x-2 bg-white/5 border border-white/5 rounded-lg px-2 py-1.5">
+                        <span className={`w-1.5 h-1.5 rounded-full shadow-[0_0_6px_rgba(59,130,246,0.6)] ${activeSymbol === 'XAUUSD' ? 'bg-yellow-500' : 'bg-blue-500'}`}></span>
+                        <span className="text-[11px] font-black text-white tracking-wide">{activeSymbol}</span>
                     </div>
                 </div>
 
                 <div className="flex flex-col">
-                    <span className="text-[9px] text-zinc-500 font-bold uppercase mb-0.5">TF</span>
-                    <select value={activeTimeframe} onChange={(e) => onTimeframeChange(e.target.value as TimeframeType)} className="bg-white/5 text-white text-xs font-bold rounded-lg px-2 py-1.5 border border-white/5 outline-none focus:border-blue-500 w-16">
+                    <span className="text-[9px] text-zinc-500 font-bold uppercase mb-0.5 hidden lg:block">TF</span>
+                    <select value={activeTimeframe} onChange={(e) => onTimeframeChange(e.target.value as TimeframeType)} className="bg-white/5 text-white text-[11px] font-bold rounded-lg px-1.5 py-1.5 border border-white/5 outline-none focus:border-blue-500 w-14">
                         <option value="M2" className="bg-zinc-900">M2</option>
                         <option value="M5" className="bg-zinc-900">M5</option>
                         <option value="M15" className="bg-zinc-900">M15</option>
@@ -171,11 +185,11 @@ export const AccountDashboard: React.FC<Props> = ({
                 </div>
             </div>
 
-            <div className="w-[1px] h-8 bg-white/10 mx-1"></div>
+            <div className="w-[1px] h-8 bg-white/10 mx-0.5"></div>
             
-            <div className="text-right min-w-[80px] px-2 shrink-0">
-                <span className="text-zinc-500 text-[9px] block font-bold uppercase">Price</span>
-                <span className={`font-mono text-lg font-bold drop-shadow-sm ${currentPrice > 0 ? 'text-yellow-400' : 'text-zinc-600'}`}>{currentPrice > 0 ? formatPrice(currentPrice) : '---'}</span>
+            <div className="text-right min-w-[70px] px-1 shrink-0">
+                <span className="text-zinc-500 text-[9px] block font-bold uppercase hidden lg:block">Price</span>
+                <span className={`font-mono text-base lg:text-lg font-bold drop-shadow-sm ${currentPrice > 0 ? 'text-yellow-400' : 'text-zinc-600'}`}>{currentPrice > 0 ? formatPrice(currentPrice) : '---'}</span>
             </div>
           </div>
         </div>

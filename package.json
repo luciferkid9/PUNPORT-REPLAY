@@ -6,19 +6,28 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "lint": "eslint ."
   },
   "dependencies": {
-    "react-dom": "^19.2.3",
-    "recharts": "^3.6.0",
-    "react": "^19.2.3",
+    "@fingerprintjs/fingerprintjs": "^5.0.1",
+    "@supabase/supabase-js": "^2.98.0",
+    "html2canvas": "1.4.1",
     "lightweight-charts": "4.1.1",
-    "html2canvas": "1.4.1"
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "recharts": "^3.6.0"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
+    "@typescript-eslint/eslint-plugin": "^8.56.1",
+    "@typescript-eslint/parser": "^8.56.1",
     "@vitejs/plugin-react": "^5.0.0",
+    "eslint": "^9.39.3",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.0.1",
     "typescript": "~5.8.2",
+    "typescript-eslint": "^8.56.1",
     "vite": "^6.2.0"
   }
 }

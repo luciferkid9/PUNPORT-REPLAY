@@ -9,9 +9,36 @@ interface Props {
 }
 
 export const DrawingSettingsModal: React.FC<Props> = ({ drawing, onSave, onClose }) => {
+  // Determine Tabs based on Type
+  let availableTabs: string[] = ['STYLE'];
+  if (drawing.type === 'FIB') availableTabs = ['STYLE', 'LEVELS'];
+  if (drawing.type === 'KILLZONE') availableTabs = ['SETTINGS'];
+  if (['LONG_POSITION', 'SHORT_POSITION'].includes(drawing.type)) availableTabs = ['STYLE', 'COORDINATES'];
+
+  const [activeTab, setActiveTab] = useState<string>(availableTabs[0]);
+
+  // Determine decimal places based on symbol
+  const isJpy = drawing.symbol.includes('JPY');
+  const isXau = drawing.symbol.includes('XAU');
+  const isXag = drawing.symbol.includes('XAG');
+  const digits = isJpy ? 3 : ((isXau || isXag) ? 2 : 5);
+  const pipScalar = isJpy ? 0.01 : ((isXau || isXag) ? 0.01 : 0.0001);
+  const step = isJpy ? "0.001" : ((isXau || isXag) ? "0.01" : "0.00001");
+
+  const roundPrice = (val: number) => {
+      return Math.round(val * Math.pow(10, digits)) / Math.pow(10, digits);
+  };
+
   const [localDrawing, setLocalDrawing] = useState<DrawingObject>(() => {
       // Deep copy to prevent mutation
       const copy = { ...drawing };
+      
+      // Round initial prices to match chart precision
+      copy.p1 = { ...copy.p1, price: roundPrice(copy.p1.price) };
+      if (copy.p2) copy.p2 = { ...copy.p2, price: roundPrice(copy.p2.price) };
+      if (copy.stopPrice) copy.stopPrice = roundPrice(copy.stopPrice);
+      if (copy.targetPrice) copy.targetPrice = roundPrice(copy.targetPrice);
+
       if (drawing.fibLevels) copy.fibLevels = drawing.fibLevels.map(l => ({...l}));
       if (drawing.killZoneConfig) {
           copy.killZoneConfig = {
@@ -21,15 +48,9 @@ export const DrawingSettingsModal: React.FC<Props> = ({ drawing, onSave, onClose
               ny: { ...drawing.killZoneConfig.ny }
           };
       }
+      
       return copy;
   });
-  
-  // Determine Tabs based on Type
-  let availableTabs: string[] = ['STYLE'];
-  if (drawing.type === 'FIB') availableTabs = ['STYLE', 'LEVELS'];
-  if (drawing.type === 'KILLZONE') availableTabs = ['SETTINGS'];
-
-  const [activeTab, setActiveTab] = useState<string>(availableTabs[0]);
 
   const handleLevelChange = (index: number, field: keyof FibLevel, value: any) => {
       setLocalDrawing(prev => {
@@ -345,6 +366,57 @@ export const DrawingSettingsModal: React.FC<Props> = ({ drawing, onSave, onClose
                     >
                         + Add Custom Level
                     </button>
+                </div>
+            )}
+            {/* --- COORDINATES (FOR POSITION TOOLS) --- */}
+            {activeTab === 'COORDINATES' && (
+                <div className="space-y-4">
+                    <div className="space-y-3">
+                        <div>
+                            <label className="text-[10px] text-zinc-500 block mb-1 font-bold">Entry Price</label>
+                            <input 
+                                type="number" step={step}
+                                value={localDrawing.p1.price}
+                                onChange={(e) => setLocalDrawing({...localDrawing, p1: {...localDrawing.p1, price: parseFloat(e.target.value)}})}
+                                onBlur={(e) => setLocalDrawing({...localDrawing, p1: {...localDrawing.p1, price: roundPrice(parseFloat(e.target.value))}})}
+                                className="w-full bg-black/20 border border-white/5 rounded-lg p-2 text-sm text-white outline-none focus:border-blue-500/50 font-mono"
+                            />
+                        </div>
+                        <div>
+                            <div className="flex justify-between items-center mb-1">
+                                <label className="text-[10px] text-zinc-500 font-bold">Stop Loss</label>
+                                {localDrawing.stopPrice && (
+                                    <span className="text-[10px] text-red-500/70 font-mono font-bold">
+                                        {Math.abs(roundPrice(localDrawing.p1.price) - roundPrice(localDrawing.stopPrice)) / pipScalar > 0 ? (Math.abs(roundPrice(localDrawing.p1.price) - roundPrice(localDrawing.stopPrice)) / pipScalar).toFixed(2) : '0.00'} pips
+                                    </span>
+                                )}
+                            </div>
+                            <input 
+                                type="number" step={step}
+                                value={localDrawing.stopPrice || 0}
+                                onChange={(e) => setLocalDrawing({...localDrawing, stopPrice: parseFloat(e.target.value)})}
+                                onBlur={(e) => setLocalDrawing({...localDrawing, stopPrice: roundPrice(parseFloat(e.target.value))})}
+                                className="w-full bg-black/20 border border-white/5 rounded-lg p-2 text-sm text-red-400 outline-none focus:border-red-500/50 font-mono"
+                            />
+                        </div>
+                        <div>
+                            <div className="flex justify-between items-center mb-1">
+                                <label className="text-[10px] text-zinc-500 font-bold">Take Profit</label>
+                                {localDrawing.targetPrice && (
+                                    <span className="text-[10px] text-green-500/70 font-mono font-bold">
+                                        {Math.abs(roundPrice(localDrawing.targetPrice) - roundPrice(localDrawing.p1.price)) / pipScalar > 0 ? (Math.abs(roundPrice(localDrawing.targetPrice) - roundPrice(localDrawing.p1.price)) / pipScalar).toFixed(2) : '0.00'} pips
+                                    </span>
+                                )}
+                            </div>
+                            <input 
+                                type="number" step={step}
+                                value={localDrawing.targetPrice || 0}
+                                onChange={(e) => setLocalDrawing({...localDrawing, targetPrice: parseFloat(e.target.value)})}
+                                onBlur={(e) => setLocalDrawing({...localDrawing, targetPrice: roundPrice(parseFloat(e.target.value))})}
+                                className="w-full bg-black/20 border border-white/5 rounded-lg p-2 text-sm text-green-400 outline-none focus:border-green-500/50 font-mono"
+                            />
+                        </div>
+                    </div>
                 </div>
             )}
         </div>

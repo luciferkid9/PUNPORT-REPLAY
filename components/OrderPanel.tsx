@@ -241,8 +241,8 @@ export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, accoun
             <div className="space-y-3 pt-4 border-t border-white/5">
                 <div className="flex justify-between items-center pl-1">
                     <div className="text-xs font-bold text-zinc-500 uppercase tracking-wider">Protection</div>
-                    <div className="text-[10px] text-zinc-500 font-mono">
-                        {riskPercent > 0 && <span className={riskPercent > 2 ? 'text-red-400' : 'text-zinc-400'}>Risk: {riskPercent.toFixed(2)}%</span>}
+                    <div className="text-xs font-mono font-bold">
+                        {riskPercent > 0 && <span className={riskPercent > 2 ? 'text-red-500' : 'text-zinc-300'}>Risk: {riskPercent.toFixed(2)}%</span>}
                     </div>
                 </div>
 
@@ -259,8 +259,13 @@ export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, accoun
                                 className="input-bubble w-full rounded-xl pl-8 pr-3 py-2.5 text-right text-sm font-mono font-bold text-red-200 outline-none focus:border-red-500/50 transition-colors placeholder-zinc-700"
                             />
                         </div>
-                        <div className="text-[9px] text-right pr-1 font-mono text-zinc-500 h-3">
-                            {riskAmount > 0 ? `-$${formatCurrency(riskAmount)} (${riskPips.toFixed(1)} pips)` : ''}
+                        <div className="text-[10px] text-right pr-1 font-mono font-bold h-4 flex justify-end items-center gap-1 whitespace-nowrap">
+                            {riskAmount > 0 ? (
+                                <>
+                                    <span className="text-red-400">-${formatCurrency(riskAmount)}</span>
+                                    <span className="text-red-500/60 text-[9px]">({riskPips.toFixed(2)} pips)</span>
+                                </>
+                            ) : ''}
                         </div>
                     </div>
 
@@ -276,8 +281,13 @@ export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, accoun
                                 className="input-bubble w-full rounded-xl pl-8 pr-3 py-2.5 text-right text-sm font-mono font-bold text-green-200 outline-none focus:border-green-500/50 transition-colors placeholder-zinc-700"
                             />
                         </div>
-                        <div className="text-[9px] text-right pr-1 font-mono text-zinc-500 h-3">
-                            {rewardAmount > 0 ? `+$${formatCurrency(rewardAmount)} (${rewardPips.toFixed(1)} pips)` : ''}
+                        <div className="text-[10px] text-right pr-1 font-mono font-bold h-4 flex justify-end items-center gap-1 whitespace-nowrap">
+                            {rewardAmount > 0 ? (
+                                <>
+                                    <span className="text-green-400">+${formatCurrency(rewardAmount)}</span>
+                                    <span className="text-green-500/60 text-[9px]">({rewardPips.toFixed(2)} pips)</span>
+                                </>
+                            ) : ''}
                         </div>
                     </div>
                 </div>

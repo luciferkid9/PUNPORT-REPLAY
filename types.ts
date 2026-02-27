@@ -189,4 +189,14 @@ export interface TraderProfile {
     drawings?: DrawingObject[]; // Persist drawings per profile
     
     customDigits?: number; // For CSV data
+    lotSizeConfig?: LotSizeConfig; // Persist Lot Size Calculator settings
+}
+
+export interface LotSizeConfig {
+    show: boolean;
+    accountBalance: number;
+    stopLossPips: number;
+    riskPercent: number;
+    currency: string;
+    position: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
 }

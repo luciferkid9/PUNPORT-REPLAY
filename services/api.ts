@@ -21,7 +21,7 @@ const toIsoString = (timestamp: number): string => {
  * Clean and format Supabase response to standard Candle format
  * FIXED: Added deduplication and robust date parsing
  */
-const sanitizeCandles = (data: any[]): Candle[] => {
+const sanitizeCandles = (data: any[], symbol?: string): Candle[] => {
     if (!Array.isArray(data)) {
         console.warn("[API Warning] Received non-array data:", data);
         return [];
@@ -44,12 +44,25 @@ const sanitizeCandles = (data: any[]): Candle[] => {
                 timeVal = Number(timeVal);
             }
 
+            let open = parseFloat(item.open);
+            let high = parseFloat(item.high);
+            let low = parseFloat(item.low);
+            let close = parseFloat(item.close);
+
+            // AUTO-FIX: If XAUUSD or XAGUSD prices are scaled incorrectly (e.g. 26.50 instead of 2650.00)
+            if (symbol === 'XAUUSD' && close < 500) {
+                open *= 100; high *= 100; low *= 100; close *= 100;
+            }
+            if (symbol === 'XAGUSD' && close < 5) {
+                open *= 10; high *= 10; low *= 10; close *= 10;
+            }
+
             return {
                 time: timeVal,
-                open: parseFloat(item.open),
-                high: parseFloat(item.high),
-                low: parseFloat(item.low),
-                close: parseFloat(item.close),
+                open,
+                high,
+                low,
+                close,
                 volume: item.volume ? parseFloat(item.volume) : 0
             };
         })
@@ -104,7 +117,7 @@ const fetchRawCandles = async (
 
         if (!response.ok) return [];
         const rawData = await response.json();
-        return sanitizeCandles(rawData);
+        return sanitizeCandles(rawData, symbol);
     } catch (error: any) {
         if (error.name !== 'AbortError') console.error('Fetch raw failed:', error);
         return [];
@@ -320,6 +333,97 @@ export const fetchCandles = async (symbol: SymbolType, timeframe: TimeframeType)
     return fetchContextCandles(symbol, timeframe, now, 1000);
 };
 
+// --- COUPON SYSTEM HELPERS ---
+
+export interface CouponInfo {
+    code: string;
+    duration_days: number;
+    is_active: boolean;
+}
+
+/**
+ * Verify if a coupon code is valid and if the device has already used one.
+ */
+export const verifyCoupon = async (code: string, deviceId: string): Promise<{ success: boolean, coupon?: CouponInfo, error?: string }> => {
+    try {
+        // 1. Check if THIS SPECIFIC coupon code has already been used on THIS device
+        const checkDeviceUrl = new URL(`${SUPABASE_URL}/rest/v1/device_used_coupons`);
+        checkDeviceUrl.searchParams.set('device_id', `eq.${deviceId}`);
+        checkDeviceUrl.searchParams.set('coupon_code', `eq.${code}`);
+        
+        const deviceResponse = await fetch(checkDeviceUrl.toString(), {
+            method: 'GET',
+            headers: {
+                'apikey': SUPABASE_KEY,
+                'Authorization': `Bearer ${SUPABASE_KEY}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (deviceResponse.ok) {
+            const usedData = await deviceResponse.json();
+            if (usedData.length > 0) {
+                return { success: false, error: "คูปองนี้ถูกใช้งานไปแล้วบนเครื่องนี้" };
+            }
+        }
+
+        // 2. Check if coupon code exists and is active
+        const checkCouponUrl = new URL(`${SUPABASE_URL}/rest/v1/coupons`);
+        checkCouponUrl.searchParams.set('code', `eq.${code}`);
+        checkCouponUrl.searchParams.set('is_active', `eq.true`);
+
+        const couponResponse = await fetch(checkCouponUrl.toString(), {
+            method: 'GET',
+            headers: {
+                'apikey': SUPABASE_KEY,
+                'Authorization': `Bearer ${SUPABASE_KEY}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        if (!couponResponse.ok) return { success: false, error: "Failed to verify coupon." };
+
+        const couponData = await couponResponse.json();
+        if (couponData.length === 0) {
+            return { success: false, error: "Invalid or inactive coupon code." };
+        }
+
+        return { success: true, coupon: couponData[0] };
+
+    } catch (error) {
+        console.error("Coupon verification error:", error);
+        return { success: false, error: "Network error during verification." };
+    }
+};
+
+/**
+ * Record coupon usage for a device.
+ */
+export const recordCouponUsage = async (code: string, deviceId: string): Promise<boolean> => {
+    try {
+        const url = new URL(`${SUPABASE_URL}/rest/v1/device_used_coupons`);
+        const response = await fetch(url.toString(), {
+            method: 'POST',
+            headers: {
+                'apikey': SUPABASE_KEY,
+                'Authorization': `Bearer ${SUPABASE_KEY}`,
+                'Content-Type': 'application/json',
+                'Prefer': 'return=minimal'
+            },
+            body: JSON.stringify({
+                device_id: deviceId,
+                coupon_code: code,
+                used_at: new Date().toISOString()
+            })
+        });
+
+        return response.ok;
+    } catch (error) {
+        console.error("Failed to record coupon usage:", error);
+        return false;
+    }
+};
+
 export const parseCSV = async (file: File): Promise<{ success: boolean, start?: number, end?: number, count?: number, digits?: number, error?: string }> => {
     return new Promise((resolve) => {
         const reader = new FileReader();
@@ -363,11 +467,13 @@ export const parseCSV = async (file: File): Promise<{ success: boolean, start?: 
 
                     if (isNaN(timestamp) || isNaN(close) || isNaN(open)) continue;
                     parsedData.push({ time: timestamp, open, high, low, close, volume });
-                } catch (err) {}
+                } catch (err) {
+                    // Skip malformed rows
+                }
             }
 
             if (parsedData.length > 0) {
-                const sorted = sanitizeCandles(parsedData);
+                const sorted = sanitizeCandles(parsedData, 'CUSTOM');
                 DATA_CACHE['CUSTOM-BASE'] = sorted;
                 
                 // Calculate digits from data

@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { INITIAL_BALANCE, SYMBOL_CONFIG, getContractSize, TF_SECONDS, DEFAULT_LEVERAGE, STOP_OUT_LEVEL } from './constants';
-import { AccountState, SimulationState, OrderSide, OrderType, Trade, OrderStatus, ToolType, DrawingObject, IndicatorConfig, IndicatorType, DrawingSettings, SymbolType, TimeframeType, Candle, TraderProfile, TradeJournal, KillZoneConfig, DragTradeUpdate, FibLevel } from './types';
+import { AccountState, SimulationState, OrderSide, OrderType, Trade, OrderStatus, ToolType, DrawingObject, IndicatorConfig, IndicatorType, DrawingSettings, SymbolType, TimeframeType, Candle, TraderProfile, TradeJournal, KillZoneConfig, DragTradeUpdate, FibLevel, LotSizeConfig } from './types';
 import { ChartContainer, ChartRef } from './components/ChartContainer';
 import { AccountDashboard } from './components/AccountDashboard';
 import { OrderPanel } from './components/OrderPanel';
@@ -12,8 +12,13 @@ import { ChallengeSetupModal } from './components/ChallengeSetupModal';
 import { DetailedStats } from './components/DetailedStats';
 import { MarketStructureWidget } from './components/MarketStructureWidget';
 import { IndicatorSettingsModal } from './components/IndicatorSettingsModal';
+import { LotSizeCalculatorModal } from './components/LotSizeCalculatorModal';
+import { LotSizeWidget } from './components/LotSizeWidget';
+import { AuthScreen } from './components/AuthScreen';
 import { calculateSMA, calculateEMA, calculateRSI, calculateMACD, calculateRequiredMargin, calculatePnLInUSD, resampleCandles } from './services/logicEngine';
 import { fetchCandles, parseCSV, fetchHistoricalData, fetchContextCandles, fetchFutureCandles, fetchFirstCandle } from './services/api';
+import { supabase } from './services/supabase';
+import { fetchUserSessions, saveUserSession, deleteUserSession } from './services/profileService';
 
 const STORAGE_KEY = 'protrade_profiles_v2'; 
 
@@ -48,6 +53,10 @@ const DEFAULT_FIB_LEVELS: FibLevel[] = [
 ];
 
 const App: React.FC = () => {
+  // --- AUTH STATE ---
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [userId, setUserId] = useState<string | null>(null);
+
   // --- STATE ---
   const [profiles, setProfiles] = useState<TraderProfile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
@@ -101,6 +110,30 @@ const App: React.FC = () => {
   // State to hold the current Fib Levels preference (persists through session)
   const [currentFibLevels, setCurrentFibLevels] = useState<FibLevel[]>(DEFAULT_FIB_LEVELS);
 
+  // Lot Size Calculator State
+  const [lotSizeConfig, setLotSizeConfig] = useState<LotSizeConfig>({
+      show: false,
+      accountBalance: 1000,
+      stopLossPips: 20,
+      riskPercent: 1,
+      currency: 'USD',
+      position: 'bottom-right'
+  });
+  const [showLotSizeModal, setShowLotSizeModal] = useState<boolean>(false);
+
+  const handleLotSizeConfigUpdate = (newConfig: LotSizeConfig) => {
+      setLotSizeConfig(newConfig);
+      if (activeProfileId) {
+          setProfiles(prev => prev.map(p => p.id === activeProfileId ? { ...p, lotSizeConfig: newConfig } : p));
+      }
+  };
+
+  useEffect(() => {
+      if (activeProfile?.lotSizeConfig) {
+          setLotSizeConfig(activeProfile.lotSizeConfig);
+      }
+  }, [activeProfile?.id]);
+
   const currentSlice = useMemo(() => {
       if (chartData.length === 0) return [];
       return chartData.slice(0, Math.min(simState.currentIndex + 1, chartData.length));
@@ -132,25 +165,128 @@ const App: React.FC = () => {
   // 1. INIT & PERSISTENCE
   const isLoadedRef = useRef(false);
 
+  // Load User ID on Auth
   useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) { 
-        try { 
-            setProfiles(JSON.parse(saved)); 
-        } catch(e) {
-            console.error("Failed to parse profiles", e);
-        } 
-    }
-    isLoadedRef.current = true;
-    setIsLoading(false);
+      const checkUser = async () => {
+          const { data: { user } } = await supabase.auth.getUser();
+          if (user) {
+              setUserId(user.id);
+              setIsAuthenticated(true);
+          }
+      };
+      checkUser();
   }, []);
 
-  useEffect(() => { 
-      if (isLoadedRef.current) {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(profiles)); 
-      }
-  }, [profiles]);
+  // Load Profiles from Supabase when Authenticated
+  useEffect(() => {
+    if (!isAuthenticated || !userId) return;
 
+    const loadProfiles = async () => {
+        setIsLoading(true);
+        try {
+            const cloudProfiles = await fetchUserSessions(userId);
+            const saved = localStorage.getItem(STORAGE_KEY);
+            let localProfiles: TraderProfile[] = [];
+            
+            if (saved) {
+                try {
+                    localProfiles = JSON.parse(saved);
+                } catch (e) {
+                    console.error("Failed to parse local profiles", e);
+                }
+            }
+
+            // Merge Logic: Use a Map to handle duplicates by ID
+            const profileMap = new Map<string, TraderProfile>();
+
+            // 1. Add Cloud Profiles first
+            cloudProfiles.forEach(p => profileMap.set(p.id, p));
+
+            // 2. Merge Local Profiles (Overwrite if newer)
+            localProfiles.forEach(p => {
+                const existing = profileMap.get(p.id);
+                if (!existing) {
+                    profileMap.set(p.id, p);
+                } else {
+                    // If local is newer, use local
+                    if ((p.lastPlayed || 0) > (existing.lastPlayed || 0)) {
+                        profileMap.set(p.id, p);
+                    }
+                }
+            });
+
+            const mergedProfiles = Array.from(profileMap.values());
+            
+            // Sort by last played descending
+            mergedProfiles.sort((a, b) => (b.lastPlayed || 0) - (a.lastPlayed || 0));
+
+            setProfiles(mergedProfiles);
+
+            // Sync merged state back to Cloud if there are differences
+            // (Simple approach: just save each profile that came from local or was updated)
+            // For safety, we can just save all of them, but that might be heavy.
+            // Let's just save the ones that were "won" by local.
+            // Or simpler: just save the whole merged list if it differs length or content?
+            // Given the race condition fix in profileService, we can just iterate and save.
+            // But let's do it in the background.
+            
+            // We'll just trigger a save for the most recent profile to ensure it's up to date
+            if (mergedProfiles.length > 0) {
+                // We can't easily save ALL at once with current API (it saves one by one).
+                // We should update profileService to save ALL sessions at once.
+                // But for now, let's just save the active one if it exists? No active one yet.
+                // Let's just update the cloud with the full merged list.
+                // We need a new method in profileService for bulk update.
+                // For now, we'll iterate.
+                for (const p of mergedProfiles) {
+                     // Only save if it was from local (optimization) or just save all to be safe.
+                     // Saving all might hit rate limits.
+                     // Let's save only if it's not in cloud or local is newer.
+                     const cloudP = cloudProfiles.find(cp => cp.id === p.id);
+                     if (!cloudP || (p.lastPlayed || 0) > (cloudP.lastPlayed || 0)) {
+                         await saveUserSession(userId, p);
+                     }
+                }
+            }
+
+        } catch (e) {
+            console.error("Failed to load profiles", e);
+        } finally {
+            setIsLoading(false);
+            isLoadedRef.current = true;
+        }
+    };
+    loadProfiles();
+  }, [isAuthenticated, userId]);
+
+  // Save Active Profile to Supabase (Debounced / Event-driven)
+  const saveActiveProfile = useCallback(async () => {
+      if (!userId || !activeProfileId) return;
+      const profileToSave = profiles.find(p => p.id === activeProfileId);
+      if (profileToSave) {
+          await saveUserSession(userId, profileToSave);
+      }
+  }, [userId, activeProfileId, profiles]);
+
+  // Auto-save every 30 seconds if playing
+  useEffect(() => {
+      let interval: number;
+      if (simState.isPlaying && userId && activeProfileId) {
+          interval = window.setInterval(() => {
+              saveActiveProfile();
+          }, 30000);
+      }
+      return () => clearInterval(interval);
+  }, [simState.isPlaying, userId, activeProfileId, saveActiveProfile]);
+
+  // Save on Pause
+  useEffect(() => {
+      if (!simState.isPlaying && userId && activeProfileId && isLoadedRef.current) {
+          saveActiveProfile();
+      }
+  }, [simState.isPlaying, userId, activeProfileId]);
+
+  // Update Profile State (Local)
   useEffect(() => {
     if (activeProfileId) {
         setProfiles(prev => prev.map(p => {
@@ -182,7 +318,7 @@ const App: React.FC = () => {
   }, [activeProfileId]);
 
   // ... (Rest of Handlers) ...
-  const handleCreateProfile = (name: string, balance: number, symbols: SymbolType[], startDate: number, endDate: number, timeframe: TimeframeType = 'H1', customDigits?: number) => {
+  const handleCreateProfile = async (name: string, balance: number, symbols: SymbolType[], startDate: number, endDate: number, timeframe: TimeframeType = 'H1', customDigits?: number) => {
       const newProfile: TraderProfile = {
           id: Math.random().toString(36).substr(2, 9), name, createdAt: Date.now(), lastPlayed: Date.now(),
           timePlayed: 0,
@@ -192,14 +328,22 @@ const App: React.FC = () => {
           customDigits
       };
       setProfiles(prev => [...prev, newProfile]);
+      
+      // Save to Cloud immediately
+      if (userId) {
+          await saveUserSession(userId, newProfile);
+      }
+      
       handleSelectProfile(newProfile);
   };
+
 
   const handleSelectProfile = (profile: TraderProfile) => {
       setAccount(profile.account); setActiveSymbol(profile.activeSymbol); setActiveTimeframe(profile.activeTimeframe);
       setCurrentSimTime(profile.currentSimTime); setActiveProfileId(profile.id); setActiveProfile(profile);
       setAllDrawings(profile.drawings || []); setChartData([]);
       warmupDataRef.current = [];
+      lastKnownPriceRef.current = 0;
       setShowDataError(false);
       setIsLoading(true); 
   };
@@ -207,16 +351,31 @@ const App: React.FC = () => {
   const handleSymbolChange = (newSymbol: SymbolType) => {
       setActiveSymbol(newSymbol); setChartData([]);
       warmupDataRef.current = [];
+      lastKnownPriceRef.current = 0;
       setShowDataError(false);
       setSimState(prev => ({ ...prev, isPlaying: false }));
   };
 
-  const handleDeleteProfile = (id: string) => {
-      setProfiles(prev => prev.filter(p => p.id !== id));
-      if (activeProfileId === id) { setActiveProfileId(null); setActiveProfile(null); }
+  const handleDeleteProfile = async (id: string) => {
+      if (window.confirm('Are you sure you want to delete this session?')) {
+          setProfiles(prev => prev.filter(p => p.id !== id));
+          if (activeProfileId === id) { setActiveProfileId(null); setActiveProfile(null); }
+          
+          if (userId) {
+              await deleteUserSession(id);
+          }
+      }
   };
 
-  const handleExitProfile = () => {
+  const handleExitProfile = async () => {
+      // Save before exiting
+      if (userId && activeProfileId) {
+          const profileToSave = profiles.find(p => p.id === activeProfileId);
+          if (profileToSave) {
+              await saveUserSession(userId, profileToSave);
+          }
+      }
+
       setSimState(prev => ({ ...prev, isPlaying: false })); setActiveProfileId(null); setActiveProfile(null);
       setAccount({ balance: INITIAL_BALANCE, equity: INITIAL_BALANCE, maxEquity: INITIAL_BALANCE, maxDrawdown: 0, history: [] });
       setChartData([]); setAllDrawings([]); setShowDataError(false); warmupDataRef.current = [];
@@ -322,10 +481,10 @@ const App: React.FC = () => {
                  if (activeCandle) {
                      const candleEndTime = activeCandle.time + tfSecs;
                      if (simTime < candleEndTime - 1) {
-                         let open = activeCandle.open;
-                         let close = lastKnownPriceRef.current || open;
-                         let high = Math.max(open, close);
-                         let low = Math.min(open, close);
+                         const open = activeCandle.open;
+                         const close = lastKnownPriceRef.current || open;
+                         const high = Math.max(open, close);
+                         const low = Math.min(open, close);
                          finalVisible[newIndex] = { ...activeCandle, open, high, low, close };
                          setCurrentRealTimePrice(close);
                      } else { 
@@ -745,6 +904,10 @@ const App: React.FC = () => {
       }
   }, [tradingPrice, activeSymbol, simState.currentIndex]); 
 
+  if (!isAuthenticated) {
+    return <AuthScreen onSuccess={() => setIsAuthenticated(true)} />;
+  }
+
   if (!activeProfileId || !activeProfile) {
       return (
         <ChallengeSetupModal profiles={profiles} onStart={handleSelectProfile} onCreate={handleCreateProfile} onDelete={handleDeleteProfile} />
@@ -809,7 +972,7 @@ const App: React.FC = () => {
                     className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200 group relative ${activeTool === 'TRENDLINE' ? 'bg-blue-500/20 text-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.2)] ring-1 ring-blue-500/50' : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'}`} 
                     title="Trendline"
                 >
-                    <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.2} d="M5 19L19 5M5 5h2v2H5V5zm12 12h2v2h-2v-2z" /></svg>
+                    <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 19L19 5" /></svg>
                 </button>
                 <button 
                     onClick={() => { setActiveTool('TEXT'); setSelectedDrawingId(null); }} 
@@ -901,6 +1064,17 @@ const App: React.FC = () => {
                  >
                      <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.2} d="M5 9a7 7 0 1114 0v4h-4V9a3 3 0 00-6 0v4H5V9zM5 17h4v2H5v-2zm10 0h4v2h-4v-2z" /></svg>
                  </button>
+
+                 <button 
+                    onClick={() => {
+                        setLotSizeConfig(prev => ({...prev, show: !prev.show}));
+                        if (!lotSizeConfig.show) setShowLotSizeModal(true);
+                    }} 
+                    className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200 group relative ${lotSizeConfig.show ? 'bg-pink-500/20 text-pink-400 ring-1 ring-pink-500/50 shadow-[0_0_15px_rgba(236,72,153,0.2)]' : 'text-zinc-500 hover:text-pink-300 hover:bg-white/5'}`} 
+                    title="Position Size Calculator"
+                 >
+                     <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.2} d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" /></svg>
+                 </button>
                  <button 
                     onClick={() => setShowDrawingManager(!showDrawingManager)} 
                     className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200 group relative ${showDrawingManager ? 'bg-white/10 text-white ring-1 ring-white/20' : 'text-zinc-500 hover:text-white hover:bg-white/5'}`} 
@@ -933,8 +1107,13 @@ const App: React.FC = () => {
                     onRemoveIndicator={handleRemoveIndicator} // Pass remove handler
                     drawings={currentDrawings} selectedDrawingId={selectedDrawingId} 
                     pricePrecision={currentDigits} 
+                    lotSizeConfig={lotSizeConfig}
+                    onLotSizeWidgetDoubleClick={() => setShowLotSizeModal(true)}
+                    currentPrice={tradingPrice}
                 />
                 
+                <LotSizeCalculatorModal isOpen={showLotSizeModal} onClose={() => setShowLotSizeModal(false)} config={lotSizeConfig} onSave={handleLotSizeConfigUpdate} />
+
                 {/* MARKET STRUCTURE WIDGET */}
                 <MarketStructureWidget 
                     symbol={activeSymbol} 
