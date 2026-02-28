@@ -89,8 +89,24 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
   const avgWin = wins.length > 0 ? wins.reduce((a, b) => a + (b.pnl || 0), 0) / wins.length : 0;
   const avgLoss = losses.length > 0 ? losses.reduce((a, b) => a + (b.pnl || 0), 0) / losses.length : 0;
   
+  // Calculate Average R-Multiple of Winning Trades (User requested 1.745 style)
+  let totalWinR = 0;
+  let winRCount = 0;
+  closedTrades.forEach(t => {
+      if ((t.pnl || 0) <= 0) return; // Only winning trades
+      const effectiveSL = (t.initialStopLoss && t.initialStopLoss > 0) ? t.initialStopLoss : t.stopLoss;
+      const riskDist = effectiveSL > 0 ? Math.abs(t.entryPrice - effectiveSL) : 0;
+      if (riskDist > 0 && t.closePrice) {
+          let priceMove = t.closePrice - t.entryPrice;
+          if (t.side === 'SHORT') priceMove = -priceMove;
+          totalWinR += (priceMove / riskDist);
+          winRCount++;
+      }
+  });
+  const avgRR = winRCount > 0 ? (totalWinR / winRCount) : 0;
+  
   const expectancy = closedTrades.length > 0 ? totalPnL / closedTrades.length : 0;
-
+  
   let totalDuration = 0;
   closedTrades.forEach(t => { if (t.entryTime && t.closeTime) totalDuration += (t.closeTime - t.entryTime); });
   const avgDurationSeconds = closedTrades.length > 0 ? totalDuration / closedTrades.length : 0;
@@ -112,24 +128,6 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
 
       return parts.join(' ');
   };
-
-  let totalRMultiple = 0;
-  let countR = 0;
-  closedTrades.forEach(t => {
-      if ((t.pnl || 0) === 0) return;
-      const effectiveSL = (t.initialStopLoss && t.initialStopLoss > 0) ? t.initialStopLoss : t.stopLoss;
-      const riskDist = effectiveSL > 0 ? Math.abs(t.entryPrice - effectiveSL) : 0;
-
-      if (riskDist > 0 && t.closePrice) {
-          let priceMove = t.closePrice - t.entryPrice;
-          if (t.side === 'SHORT') priceMove = -priceMove;
-          
-          const r = priceMove / riskDist;
-          totalRMultiple += r;
-          countR++;
-      }
-  });
-  const avgRR = countR > 0 ? (totalRMultiple / countR) : 0;
   
   const initialBalance = balance - totalPnL;
   const gainPercent = ((balance - initialBalance) / initialBalance) * 100;
@@ -249,6 +247,40 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
       setCalendarDate(prev => new Date(prev.getFullYear(), prev.getMonth() + delta, 1));
   };
 
+  const getKillZoneStatus = (timestamp: number) => {
+      const { hour } = getThaiParts(timestamp);
+      
+      // 1. Check if INSIDE a zone
+      if (killZoneConfig.asian.enabled && isHourInSession(hour, killZoneConfig.asian.start, killZoneConfig.asian.end)) {
+          return { name: killZoneConfig.asian.label, color: killZoneConfig.asian.color };
+      }
+      if (killZoneConfig.london.enabled && isHourInSession(hour, killZoneConfig.london.start, killZoneConfig.london.end)) {
+          return { name: killZoneConfig.london.label, color: killZoneConfig.london.color };
+      }
+      if (killZoneConfig.ny.enabled && isHourInSession(hour, killZoneConfig.ny.start, killZoneConfig.ny.end)) {
+          return { name: killZoneConfig.ny.label, color: killZoneConfig.ny.color };
+      }
+
+      // 2. If OUTSIDE, find NEXT zone
+      const asianStart = parseInt(killZoneConfig.asian.start.split(':')[0]);
+      const londonStart = parseInt(killZoneConfig.london.start.split(':')[0]);
+      const nyStart = parseInt(killZoneConfig.ny.start.split(':')[0]);
+
+      const zones = [
+          { name: killZoneConfig.asian.label, start: asianStart, color: killZoneConfig.asian.color },
+          { name: killZoneConfig.london.label, start: londonStart, color: killZoneConfig.london.color },
+          { name: killZoneConfig.ny.label, start: nyStart, color: killZoneConfig.ny.color }
+      ].sort((a, b) => a.start - b.start);
+
+      const nextZone = zones.find(z => z.start > hour);
+      if (nextZone) {
+          return { name: `Pre-${nextZone.name}`, color: nextZone.color, isPre: true };
+      } else {
+          // Wrap around to first zone of next day
+          return { name: `Pre-${zones[0].name}`, color: zones[0].color, isPre: true };
+      }
+  };
+
   const handleExportHTML = () => {
       if (closedTrades.length === 0 && equityData.length === 1) {
           alert("No data to export.");
@@ -291,8 +323,9 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                     <div class="text-xl font-bold text-white">${formatDuration(avgDurationSeconds)}</div>
                 </div>
                 <div class="p-4 bg-white/5 rounded-xl border border-white/10">
-                    <div class="text-[10px] text-zinc-500 font-bold uppercase">Avg R:R</div>
-                    <div class="text-xl font-bold text-white">${avgRR > 0 ? '+' : ''}${avgRR.toFixed(2)}R</div>
+                    <div class="text-[10px] text-zinc-500 font-bold uppercase">Avg RR</div>
+                    <div class="text-xl font-bold text-white">${avgRR.toFixed(3)} R</div>
+                    <div class="text-[10px] text-zinc-600 mt-1">Avg Win R</div>
                 </div>
                 <div class="p-4 bg-white/5 rounded-xl border border-white/10">
                     <div class="text-[10px] text-zinc-500 font-bold uppercase">Profit Factor</div>
@@ -455,7 +488,9 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                                     <th class="p-3">ID</th>
                                     <th class="p-3">Type</th>
                                     <th class="p-3">Details</th>
+                                    <th class="p-3">Kill Zone</th>
                                     <th class="p-3">Entry / Exit</th>
+                                    <th class="p-3">Lot</th>
                                     <th class="p-3">Duration</th>
                                     <th class="p-3 text-right">Profit/Loss</th>
                                 </tr>
@@ -475,8 +510,49 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                     const dayLabels = ${JSON.stringify(dayLabels)};
                     const dayPnLs = ${JSON.stringify(dayPnLs)};
                     const dayColors = ${JSON.stringify(dayColors)};
+                    
+                    // Kill Zone Config for JS context
+                    const kzConfig = ${JSON.stringify(killZoneConfig)};
 
                     let currentDate = new Date(${currentSimTime * 1000});
+                    
+                    // Helper: Get Thai Hour
+                    const getThaiHour = (ts) => {
+                        const d = new Date(ts * 1000);
+                        const h = d.toLocaleString('en-US', { timeZone: 'Asia/Bangkok', hour: 'numeric', hour12: false });
+                        return parseInt(h === '24' ? '0' : h);
+                    };
+
+                    // Helper: Check Session
+                    const isHourInSession = (hour, startStr, endStr) => {
+                        const start = parseInt(startStr.split(':')[0]);
+                        const end = parseInt(endStr.split(':')[0]);
+                        if (isNaN(start) || isNaN(end)) return false;
+                        if (start < end) return hour >= start && hour < end;
+                        return hour >= start || hour < end;
+                    };
+
+                    // Helper: Get Kill Zone Status (JS Version)
+                    const getKZStatus = (ts) => {
+                        const hour = getThaiHour(ts);
+                        
+                        if (kzConfig.asian.enabled && isHourInSession(hour, kzConfig.asian.start, kzConfig.asian.end)) 
+                            return { name: kzConfig.asian.label, color: kzConfig.asian.color };
+                        if (kzConfig.london.enabled && isHourInSession(hour, kzConfig.london.start, kzConfig.london.end)) 
+                            return { name: kzConfig.london.label, color: kzConfig.london.color };
+                        if (kzConfig.ny.enabled && isHourInSession(hour, kzConfig.ny.start, kzConfig.ny.end)) 
+                            return { name: kzConfig.ny.label, color: kzConfig.ny.color };
+
+                        const zones = [
+                            { name: kzConfig.asian.label, start: parseInt(kzConfig.asian.start), color: kzConfig.asian.color },
+                            { name: kzConfig.london.label, start: parseInt(kzConfig.london.start), color: kzConfig.london.color },
+                            { name: kzConfig.ny.label, start: parseInt(kzConfig.ny.start), color: kzConfig.ny.color }
+                        ].sort((a, b) => a.start - b.start);
+
+                        const next = zones.find(z => z.start > hour);
+                        if (next) return { name: 'Pre-' + next.name, color: next.color, isPre: true };
+                        return { name: 'Pre-' + zones[0].name, color: zones[0].color, isPre: true };
+                    };
 
                     function renderCalendar() {
                         const year = currentDate.getFullYear();
@@ -559,6 +635,11 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                                 return (h>0 ? h+'h ' : '') + m + 'm';
                             };
 
+                            const kz = getKZStatus(t.entryTime);
+                            const kzStyle = kz.isPre 
+                                ? \`color: #e4e4e7; opacity: 0.8; font-weight: normal;\` 
+                                : \`color: \${kz.color}; font-weight: bold;\`;
+
                             html += \`
                                 <tr class="border-b border-white/5 trade-row transition-colors" onclick="openModal('\${t.id}')">
                                     <td class="p-3 text-zinc-500 font-mono text-xs">#\${t.id.substr(0,4)}</td>
@@ -567,7 +648,14 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                                         <div class="font-bold text-zinc-300">\${t.symbol}</div>
                                         <div class="text-[10px] text-zinc-600">\${formatTime(t.entryTime)}</div>
                                     </td>
-                                    <td class="p-3 font-mono text-zinc-400">\${t.entryPrice.toFixed(5)} <span class="opacity-50">➜</span> \${t.closePrice?.toFixed(5)}</td>
+                                    <td class="p-3 text-xs">
+                                        <span style="\${kzStyle}">\${kz.name}</span>
+                                    </td>
+                                    <td class="p-3 font-mono text-zinc-400">
+                                        <div class="font-bold text-sm text-zinc-300">\${t.entryPrice.toFixed(5)}</div>
+                                        <div class="font-bold text-sm text-zinc-500 mt-0.5">➜ \${t.closePrice?.toFixed(5)}</div>
+                                    </td>
+                                    <td class="p-3 font-bold text-sm text-zinc-300">\${t.quantity}</td>
                                     <td class="p-3 font-mono text-xs text-zinc-400">\${formatDur(duration)}</td>
                                     <td class="p-3 font-bold text-xs text-right \${pnlColor}">$\${pnl.toLocaleString('en-US', {minimumFractionDigits: 2})}</td>
                                 </tr>
@@ -833,7 +921,7 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                 <MetricCard label="Win Rate" value={`${winRate.toFixed(1)}%`} color={winRate > 50 ? 'text-green-400' : 'text-red-400'} />
                 <MetricCard label="Expectancy" value={`$${formatCurrency(expectancy)}`} sub="Per Trade" color={expectancy > 0 ? 'text-green-400' : 'text-zinc-200'} />
                 <MetricCard label="Avg Duration" value={formatDuration(avgDurationSeconds)} sub="Holding Time" />
-                <MetricCard label="Avg R:R" value={`${avgRR > 0 ? '+' : ''}${avgRR.toFixed(2)}R`} sub="Realized" />
+                <MetricCard label="Avg RR" value={`${avgRR.toFixed(3)} R`} sub="Avg Win R-Multiple" />
                 <MetricCard label="Profit Factor" value={((wins.reduce((a,b)=>a+(b.pnl||0),0) / Math.abs(losses.reduce((a,b)=>a+(b.pnl||0),0))) || 0).toFixed(2)} />
                 <MetricCard label="Net Profit" value={`$${formatCurrency(totalPnL)}`} color={totalPnL >= 0 ? 'text-green-400' : 'text-red-400'} />
                 <MetricCard label="Gain" value={`${gainPercent.toFixed(2)}%`} color={gainPercent >= 0 ? 'text-green-400' : 'text-red-400'} />
@@ -951,7 +1039,9 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                                 <th className="p-4">#</th>
                                 <th className="p-4">Type</th>
                                 <th className="p-4">Time (Thai)</th>
+                                <th className="p-4">Kill Zone</th>
                                 <th className="p-4">Entry/Exit</th>
+                                <th className="p-4">Lot</th>
                                 <th className="p-4">Duration</th>
                                 <th className="p-4">R:R (Real / Plan)</th>
                                 <th className="p-4">Journal</th>
@@ -964,6 +1054,8 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                                 const effectiveSL = (t.initialStopLoss && t.initialStopLoss > 0) ? t.initialStopLoss : t.stopLoss;
                                 const riskDist = effectiveSL > 0 ? Math.abs(t.entryPrice - effectiveSL) : 0;
                                 
+                                const kz = getKillZoneStatus(t.entryTime || 0);
+
                                 let rrDisplay = <span className="text-zinc-600">---</span>;
                                 const isBreakEven = (t.pnl || 0) === 0;
                                 
@@ -1013,9 +1105,22 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                                                 <span className="text-zinc-500">{formatDateThai(t.closeTime)}</span>
                                             </div>
                                         </td>
+                                        <td className="p-4 text-xs">
+                                            <span style={{ 
+                                                color: (kz as any).isPre ? '#e4e4e7' : kz.color, 
+                                                fontStyle: 'normal',
+                                                fontWeight: (kz as any).isPre ? 'normal' : 'bold',
+                                                opacity: (kz as any).isPre ? 0.8 : 1
+                                            }}>
+                                                {kz.name}
+                                            </span>
+                                        </td>
                                         <td className="p-4 text-zinc-400">
-                                            <div>{t.entryPrice.toFixed(5)}</div>
-                                            <div className="text-[11px] opacity-60">➜ {t.closePrice?.toFixed(5)}</div>
+                                            <div className="font-bold text-sm text-zinc-300">{t.entryPrice.toFixed(5)}</div>
+                                            <div className="font-bold text-sm text-zinc-500 mt-0.5">➜ {t.closePrice?.toFixed(5)}</div>
+                                        </td>
+                                        <td className="p-4 font-bold text-sm text-zinc-300">
+                                            {t.quantity}
                                         </td>
                                         <td className="p-4 text-zinc-300">
                                             {formatDuration(duration)}

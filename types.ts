@@ -60,6 +60,7 @@ export interface Trade {
 }
 
 export interface AccountState {
+  initialBalance: number; // Added for PnL calculation
   balance: number;
   equity: number;
   maxEquity: number; // For DD Calculation
