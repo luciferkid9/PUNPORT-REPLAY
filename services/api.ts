@@ -363,7 +363,7 @@ export const verifyCoupon = async (code: string, deviceId: string): Promise<{ su
         if (deviceResponse.ok) {
             const usedData = await deviceResponse.json();
             if (usedData.length > 0) {
-                return { success: false, error: "This device has already used this coupon." };
+                return { success: false, error: "คูปองนี้ถูกใช้ไปแล้วในเครื่องนี้" };
             }
         }
 
