@@ -177,6 +177,23 @@ const App: React.FC = () => {
           }
       };
       checkUser();
+
+      // Listen for auth changes (Login/Logout)
+      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+          if (session?.user) {
+              setUserId(session.user.id);
+              setIsAuthenticated(true);
+          } else {
+              setUserId(null);
+              setIsAuthenticated(false);
+              setProfiles([]); // Clear profiles on logout
+              setIsLoading(false);
+          }
+      });
+
+      return () => {
+          subscription.unsubscribe();
+      };
   }, []);
 
   // Sync with Cloud when Authenticated & Load Local (Namespaced)

@@ -67,10 +67,18 @@ export const ChallengeSetupModal: React.FC<Props> = ({ profiles, onStart, onCrea
       }
   };
 
-  // If no profiles exist, force create view
+  // If no profiles exist, force create view. 
+  // If profiles load in (length 0 -> >0), switch to LIST view automatically.
+  const prevProfilesLength = useRef(profiles.length);
+
   useEffect(() => {
-    if (profiles.length === 0) setView('CREATE');
-  }, [profiles]);
+    if (profiles.length === 0) {
+        setView('CREATE');
+    } else if (prevProfilesLength.current === 0 && profiles.length > 0) {
+        setView('LIST');
+    }
+    prevProfilesLength.current = profiles.length;
+  }, [profiles.length]);
 
   // Load Persisted Coupon and Device ID
   useEffect(() => {
@@ -222,8 +230,28 @@ export const ChallengeSetupModal: React.FC<Props> = ({ profiles, onStart, onCrea
       // 1. Record usage in Supabase AND Update Profile
       if (couponInfo) {
           const { data: { user } } = await supabase.auth.getUser();
-          await recordCouponUsage(couponInfo.code, deviceId, user?.id);
           
+          // Attempt to record usage on server
+          // If this fails (e.g., due to unique constraint on device_id + coupon_code), we block.
+          const recorded = await recordCouponUsage(couponInfo.code, deviceId, user?.id);
+          
+          if (!recorded) {
+              alert("ไม่สามารถบันทึกการใช้คูปองได้ หรือคูปองนี้ถูกใช้ไปแล้วในเครื่องนี้");
+              return;
+          }
+          
+          // FIX: Save to local device blacklist to prevent reuse across accounts (bypassing RLS limitations)
+          try {
+              const usedCodes = JSON.parse(localStorage.getItem('device_used_codes') || '[]');
+              const normalizedCode = couponInfo.code.toUpperCase();
+              if (!usedCodes.includes(normalizedCode)) {
+                  usedCodes.push(normalizedCode);
+                  localStorage.setItem('device_used_codes', JSON.stringify(usedCodes));
+              }
+          } catch (e) {
+              console.error("Failed to save local coupon history", e);
+          }
+
           // Update Profile
           if (user) {
               const trialEndsAt = new Date();
@@ -247,6 +275,13 @@ export const ChallengeSetupModal: React.FC<Props> = ({ profiles, onStart, onCrea
       }
       if (!deviceId) {
           setCouponError("กำลังดึงข้อมูลเครื่อง... กรุณารอสักครู่");
+          return;
+      }
+
+      // FIX: Check local blacklist first (Case Insensitive)
+      const usedCodes = JSON.parse(localStorage.getItem('device_used_codes') || '[]');
+      if (usedCodes.includes(couponCode.trim().toUpperCase())) {
+          setCouponError("คูปองนี้ถูกใช้ไปแล้วในเครื่องนี้");
           return;
       }
 
