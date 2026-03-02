@@ -125,6 +125,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
   const onDrawingSelectRef = useRef(onDrawingSelect);
   const intervalRef = useRef(interval);
   const tempPointRef = useRef(tempPoint);
+  const isShiftPressed = useRef(false);
 
   const dataRef = useRef(data);
   useEffect(() => { dataRef.current = data; }, [data]);
@@ -140,6 +141,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+        if (e.key === 'Shift') isShiftPressed.current = true;
         if (document.activeElement instanceof HTMLInputElement || document.activeElement instanceof HTMLTextAreaElement) return;
         if ((e.key === 'Delete' || e.key === 'Backspace') && selectedDrawingId) {
             if (onDrawingDelete) {
@@ -148,8 +150,15 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
             }
         }
     };
+    const handleKeyUp = (e: KeyboardEvent) => {
+        if (e.key === 'Shift') isShiftPressed.current = false;
+    };
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+        window.removeEventListener('keydown', handleKeyDown);
+        window.removeEventListener('keyup', handleKeyUp);
+    };
   }, [selectedDrawingId, onDrawingDelete, onDrawingSelect]);
 
   useImperativeHandle(ref, () => ({
@@ -231,11 +240,38 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
       document.removeEventListener('mouseup', handleResizeEnd);
   };
 
+  // Helper to get logical index from time (for robust calculations)
+  const getLogicalFromTime = (time: number): number => {
+      const data = dataRef.current;
+      if (!data || data.length === 0) return 0;
+      
+      // Binary search for nearest candle
+      let l = 0, r = data.length - 1;
+      while (l <= r) {
+          const m = (l + r) >>> 1;
+          if (data[m].time === time) return m;
+          if (data[m].time < time) l = m + 1;
+          else r = m - 1;
+      }
+      
+      const candleInterval = intervalRef.current || 60;
+
+      // Extrapolate if outside range
+      if (r < 0) return -1 + (time - data[0].time) / candleInterval;
+      if (l >= data.length) return data.length + (time - data[data.length-1].time) / candleInterval;
+      
+      // Interpolate if between candles
+      const t1 = data[r].time;
+      const t2 = data[l].time;
+      const ratio = (time - t1) / (t2 - t1);
+      return r + ratio;
+  };
+
   // --- MOUSE HANDLER ---
   const handleMouseMove = (e: React.MouseEvent, pane: string) => {
     const targetDiv = pane === 'MAIN' ? chartContainerRef.current : indicatorContainerRefs.current.get(pane);
     if (!targetDiv) return;
-
+    // ... (rect calc)
     const rect = targetDiv.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
@@ -253,12 +289,14 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
           if (time) {
               let finalPrice = getMagnetPrice(time, rawPrice, pane);
 
-              // --- SHIFT KEY SNAP LOGIC (Trendline) ---
+              // --- SHIFT KEY SNAP LOGIC (Trendline Creation) ---
               if (e.shiftKey && tempPoint && tempPoint.pane === pane && activeToolRef.current === 'TRENDLINE') {
                   const p1Time = tempPoint.point.time;
                   const p1Price = tempPoint.point.price;
                   
-                  const p1X = chart.timeScale().timeToCoordinate(p1Time);
+                  // Use projected coordinate for P1 to handle off-screen snapping
+                  const p1Logical = getLogicalFromTime(p1Time);
+                  const p1X = chart.timeScale().logicalToCoordinate(p1Logical);
                   const p1Y = series.priceToCoordinate(p1Price);
 
                   if (p1X !== null && p1Y !== null) {
@@ -276,6 +314,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
 
       // Main pane trade dragging logic
       if (pane === 'MAIN' && dragTrade) {
+          // ... (Trade drag logic preserved)
           try {
               const price = series.coordinateToPrice(y);
               if (price !== null) {
@@ -284,9 +323,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                       onTradeDrag({ id: dragTrade.id, type: dragTrade.type, price: price });
                   }
               }
-          } catch(e) {
-              // Ignore drag errors
-          }
+          } catch(e) {}
       }
 
       // Drawing Dragging Logic
@@ -305,18 +342,111 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                   const roundPrice = (p: number) => Math.round(p * Math.pow(10, digits)) / Math.pow(10, digits);
 
                   const newObj = { ...activeDragObject };
-                  const timeDiff = time - dragTarget.initialMouse.time;
+                  
+                  // --- FIX 2: Use Logical Difference for Moving "All" to prevent stretching ---
+                  let timeDiff = 0;
+                  if (dragTarget.point === 'all') {
+                      const currentLogical = logical;
+                      const startLogical = getLogicalFromTime(dragTarget.initialMouse.time);
+                      const logicalDiff = currentLogical - startLogical;
+                      
+                      const p1StartLogical = getLogicalFromTime(dragTarget.initialP1.time);
+                      const p2StartLogical = getLogicalFromTime(dragTarget.initialP2.time);
+                      
+                      const newP1Time = getTimeFromLogical(p1StartLogical + logicalDiff, chart);
+                      const newP2Time = getTimeFromLogical(p2StartLogical + logicalDiff, chart);
+                      
+                      // We calculate the effective time diffs for P1 and P2 separately
+                      // But for the "newObj" assignment below, we need to handle it carefully.
+                      // Actually, we can just set the new times directly in the 'all' block.
+                  } else {
+                      timeDiff = time - dragTarget.initialMouse.time;
+                  }
+                  
                   const priceDiff = finalPrice - dragTarget.initialMouse.price;
 
+                  // --- SHIFT SNAP LOGIC FOR EDITING ---
+                  let snapTime = time;
+                  let snapPrice = finalPrice;
+                  let effectivePriceDiff = priceDiff;
+
+                  if (e.shiftKey && activeDragObject.type === 'TRENDLINE') {
+                      // 1. Snapping when dragging endpoints (P1 or P2)
+                      if (dragTarget.point === 'p1' || dragTarget.point === 'p2') {
+                          const otherPoint = dragTarget.point === 'p1' ? activeDragObject.p2 : activeDragObject.p1;
+                          
+                          // FIX 1: Use projected coordinates to handle off-screen points
+                          const otherLogical = getLogicalFromTime(otherPoint.time);
+                          const otherX = chart.timeScale().logicalToCoordinate(otherLogical);
+                          const otherY = series.priceToCoordinate(otherPoint.price);
+                          
+                          // If otherX is null (projection failed?), fallback to Infinity, but logicalToCoordinate usually returns value.
+                          const dx = otherX !== null ? Math.abs(x - otherX) : Infinity;
+                          const dy = otherY !== null ? Math.abs(y - otherY) : Infinity;
+
+                          if (dx > dy) {
+                              snapPrice = otherPoint.price; // Horizontal Snap
+                          } else if (dy >= dx && dx !== Infinity) {
+                              snapTime = otherPoint.time; // Vertical Snap
+                          }
+                      }
+                      
+                      // 2. Orthogonal constraint when moving the whole line
+                      if (dragTarget.point === 'all') {
+                          const startLogical = getLogicalFromTime(dragTarget.initialMouse.time);
+                          const initX = chart.timeScale().logicalToCoordinate(startLogical);
+                          const initY = series.priceToCoordinate(dragTarget.initialMouse.price);
+                          
+                          if (initX !== null && initY !== null) {
+                              const dx = Math.abs(x - initX);
+                              const dy = Math.abs(y - initY);
+                              if (dx > dy) {
+                                  effectivePriceDiff = 0; // Horizontal Move Only
+                              } else {
+                                  // Vertical Move Only: Reset logical diff
+                                  // We handle this in the 'all' block below
+                              }
+                          }
+                      }
+                  }
+                  // ------------------------------------
+
                   if (dragTarget.point === 'all') {
-                      newObj.p1 = { time: dragTarget.initialP1.time + timeDiff, price: roundPrice(dragTarget.initialP1.price + priceDiff) };
-                      newObj.p2 = { time: dragTarget.initialP2.time + timeDiff, price: roundPrice(dragTarget.initialP2.price + priceDiff) };
-                      if (dragTarget.initialTarget !== undefined && newObj.targetPrice !== undefined) newObj.targetPrice = roundPrice(dragTarget.initialTarget + priceDiff);
-                      if (dragTarget.initialStop !== undefined && newObj.stopPrice !== undefined) newObj.stopPrice = roundPrice(dragTarget.initialStop + priceDiff);
+                      // Apply Logical Move
+                      const currentLogical = logical;
+                      const startLogical = getLogicalFromTime(dragTarget.initialMouse.time);
+                      let logicalDiff = currentLogical - startLogical;
+                      
+                      // Apply Shift Constraint (Vertical Move Only -> No Time Change)
+                      if (e.shiftKey && activeDragObject.type === 'TRENDLINE') {
+                          const startLogical = getLogicalFromTime(dragTarget.initialMouse.time);
+                          const initX = chart.timeScale().logicalToCoordinate(startLogical);
+                          const initY = series.priceToCoordinate(dragTarget.initialMouse.price);
+                          if (initX !== null && initY !== null) {
+                              const dx = Math.abs(x - initX);
+                              const dy = Math.abs(y - initY);
+                              if (dy >= dx) logicalDiff = 0; // Vertical Move Only (No Time Change)
+                          }
+                      }
+
+                      const p1StartLogical = getLogicalFromTime(dragTarget.initialP1.time);
+                      const p2StartLogical = getLogicalFromTime(dragTarget.initialP2.time);
+                      
+                      const newP1Time = getTimeFromLogical(p1StartLogical + logicalDiff, chart);
+                      const newP2Time = getTimeFromLogical(p2StartLogical + logicalDiff, chart);
+                      
+                      if (newP1Time && newP2Time) {
+                          newObj.p1 = { time: newP1Time, price: roundPrice(dragTarget.initialP1.price + effectivePriceDiff) };
+                          newObj.p2 = { time: newP2Time, price: roundPrice(dragTarget.initialP2.price + effectivePriceDiff) };
+                      }
+                      
+                      if (dragTarget.initialTarget !== undefined && newObj.targetPrice !== undefined) newObj.targetPrice = roundPrice(dragTarget.initialTarget + effectivePriceDiff);
+                      if (dragTarget.initialStop !== undefined && newObj.stopPrice !== undefined) newObj.stopPrice = roundPrice(dragTarget.initialStop + effectivePriceDiff);
+                  
                   } else if (dragTarget.point === 'p1') {
-                      newObj.p1 = { time: time, price: roundPrice(finalPrice) };
+                      newObj.p1 = { time: snapTime, price: roundPrice(snapPrice) };
                   } else if (dragTarget.point === 'p2') {
-                      newObj.p2 = { time: time, price: roundPrice(finalPrice) };
+                      newObj.p2 = { time: snapTime, price: roundPrice(snapPrice) };
                   } else if (dragTarget.point === 'target') {
                       newObj.targetPrice = roundPrice(rawPrice); 
                   } else if (dragTarget.point === 'stop') {
@@ -456,6 +586,24 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                     const isLong = activeToolRef.current === 'LONG_POSITION';
                     const isShort = activeToolRef.current === 'SHORT_POSITION';
                     let targetPrice = undefined, stopPrice = undefined;
+                    let p2 = clickedPoint;
+
+                    // --- SHIFT SNAP FOR CREATION ---
+                    if (activeToolRef.current === 'TRENDLINE' && isShiftPressed.current) {
+                        const p1 = prev.point;
+                        const p1X = chart.timeScale().timeToCoordinate(p1.time);
+                        const p1Y = series.priceToCoordinate(p1.price);
+                        const p2X = chart.timeScale().timeToCoordinate(p2.time);
+                        const p2Y = series.priceToCoordinate(p2.price);
+                        
+                        if (p1X !== null && p1Y !== null && p2X !== null && p2Y !== null) {
+                            const dx = Math.abs(p2X - p1X);
+                            const dy = Math.abs(p2Y - p1Y);
+                            if (dx > dy) p2 = { ...p2, price: p1.price }; // Horizontal
+                            else p2 = { ...p2, time: p1.time }; // Vertical
+                        }
+                    }
+                    // -------------------------------
 
                     if (isLong || isShort) {
                         const entryP = prev.point.price;
@@ -482,7 +630,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                         id: Math.random().toString(36).substr(2, 9),
                         symbol: activeSymbolRef.current,
                         type: activeToolRef.current,
-                        p1: prev.point, p2: clickedPoint, visible: true, locked: false,
+                        p1: prev.point, p2: p2, visible: true, locked: false,
                         color: drawingSettingsRef.current.color, lineWidth: drawingSettingsRef.current.lineWidth, lineStyle: drawingSettingsRef.current.lineStyle,
                         targetPrice, stopPrice,
                         pane: pane 

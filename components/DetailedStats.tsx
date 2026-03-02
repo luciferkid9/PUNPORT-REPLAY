@@ -146,18 +146,58 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
   const domainMin = minEquity - padding;
   const domainMax = maxEquity + padding;
 
+  // --- MOVED UP: Helper to determine session status ---
+  const getKillZoneStatus = (timestamp: number) => {
+      const { hour } = getThaiParts(timestamp);
+      
+      // 1. Check if INSIDE a zone
+      if (killZoneConfig.asian.enabled && isHourInSession(hour, killZoneConfig.asian.start, killZoneConfig.asian.end)) {
+          return { name: killZoneConfig.asian.label, color: killZoneConfig.asian.color, isPre: false, key: 'asian' };
+      }
+      if (killZoneConfig.london.enabled && isHourInSession(hour, killZoneConfig.london.start, killZoneConfig.london.end)) {
+          return { name: killZoneConfig.london.label, color: killZoneConfig.london.color, isPre: false, key: 'london' };
+      }
+      if (killZoneConfig.ny.enabled && isHourInSession(hour, killZoneConfig.ny.start, killZoneConfig.ny.end)) {
+          return { name: killZoneConfig.ny.label, color: killZoneConfig.ny.color, isPre: false, key: 'ny' };
+      }
+
+      // 2. If OUTSIDE, find NEXT zone to determine "Pre-"
+      const asianStart = parseInt(killZoneConfig.asian.start.split(':')[0]);
+      const londonStart = parseInt(killZoneConfig.london.start.split(':')[0]);
+      const nyStart = parseInt(killZoneConfig.ny.start.split(':')[0]);
+
+      const zones = [
+          { name: killZoneConfig.asian.label, start: asianStart, color: killZoneConfig.asian.color, key: 'asian' },
+          { name: killZoneConfig.london.label, start: londonStart, color: killZoneConfig.london.color, key: 'london' },
+          { name: killZoneConfig.ny.label, start: nyStart, color: killZoneConfig.ny.color, key: 'ny' }
+      ].sort((a, b) => a.start - b.start);
+
+      // Find the first zone that starts AFTER the current hour
+      const nextZone = zones.find(z => z.start > hour);
+      if (nextZone) {
+          return { name: `Pre-${nextZone.name}`, color: nextZone.color, isPre: true, key: nextZone.key };
+      } else {
+          // Wrap around to first zone of next day
+          return { name: `Pre-${zones[0].name}`, color: zones[0].color, isPre: true, key: zones[0].key };
+      }
+  };
+
   // DYNAMIC SESSION CONFIGURATION
+  // We now include Pre-sessions explicitly in the data structure
   const sessionData = [
-      { name: killZoneConfig.asian.label, pnl: 0, count: 0, color: killZoneConfig.asian.color, key: 'asian' }, 
-      { name: killZoneConfig.london.label, pnl: 0, count: 0, color: killZoneConfig.london.color, key: 'london' }, 
-      { name: killZoneConfig.ny.label, pnl: 0, count: 0, color: killZoneConfig.ny.color, key: 'ny' }
+      { name: `Pre-${killZoneConfig.asian.label}`, pnl: 0, count: 0, color: killZoneConfig.asian.color, isPre: true },
+      { name: killZoneConfig.asian.label, pnl: 0, count: 0, color: killZoneConfig.asian.color, isPre: false },
+      { name: `Pre-${killZoneConfig.london.label}`, pnl: 0, count: 0, color: killZoneConfig.london.color, isPre: true },
+      { name: killZoneConfig.london.label, pnl: 0, count: 0, color: killZoneConfig.london.color, isPre: false },
+      { name: `Pre-${killZoneConfig.ny.label}`, pnl: 0, count: 0, color: killZoneConfig.ny.color, isPre: true },
+      { name: killZoneConfig.ny.label, pnl: 0, count: 0, color: killZoneConfig.ny.color, isPre: false }
   ];
   
   const dayData = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => ({ name: d, pnl: 0, count: 0 }));
 
   closedTrades.forEach(t => {
       if (!t.entryTime) return;
-      const { hour, weekday } = getThaiParts(t.entryTime);
+      const { weekday } = getThaiParts(t.entryTime);
       
       const dayIndex = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(weekday);
       if (dayIndex !== -1) {
@@ -165,15 +205,13 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
           dayData[dayIndex].count++;
       }
 
-      // CHECK SESSIONS BASED ON CONFIG
-      // Priority Logic: Asia -> London -> NY (Matches array order)
-      // This handles overlaps by assigning to the first match in the list.
-      if (killZoneConfig.asian.enabled && isHourInSession(hour, killZoneConfig.asian.start, killZoneConfig.asian.end)) {
-          sessionData[0].pnl += (t.pnl || 0); sessionData[0].count++;
-      } else if (killZoneConfig.london.enabled && isHourInSession(hour, killZoneConfig.london.start, killZoneConfig.london.end)) {
-          sessionData[1].pnl += (t.pnl || 0); sessionData[1].count++;
-      } else if (killZoneConfig.ny.enabled && isHourInSession(hour, killZoneConfig.ny.start, killZoneConfig.ny.end)) {
-          sessionData[2].pnl += (t.pnl || 0); sessionData[2].count++;
+      // CHECK SESSIONS
+      const status = getKillZoneStatus(t.entryTime);
+      // Find matching bucket
+      const bucket = sessionData.find(s => s.name === status.name);
+      if (bucket) {
+          bucket.pnl += (t.pnl || 0);
+          bucket.count++;
       }
   });
 
@@ -245,40 +283,6 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
 
   const changeMonth = (delta: number) => {
       setCalendarDate(prev => new Date(prev.getFullYear(), prev.getMonth() + delta, 1));
-  };
-
-  const getKillZoneStatus = (timestamp: number) => {
-      const { hour } = getThaiParts(timestamp);
-      
-      // 1. Check if INSIDE a zone
-      if (killZoneConfig.asian.enabled && isHourInSession(hour, killZoneConfig.asian.start, killZoneConfig.asian.end)) {
-          return { name: killZoneConfig.asian.label, color: killZoneConfig.asian.color };
-      }
-      if (killZoneConfig.london.enabled && isHourInSession(hour, killZoneConfig.london.start, killZoneConfig.london.end)) {
-          return { name: killZoneConfig.london.label, color: killZoneConfig.london.color };
-      }
-      if (killZoneConfig.ny.enabled && isHourInSession(hour, killZoneConfig.ny.start, killZoneConfig.ny.end)) {
-          return { name: killZoneConfig.ny.label, color: killZoneConfig.ny.color };
-      }
-
-      // 2. If OUTSIDE, find NEXT zone
-      const asianStart = parseInt(killZoneConfig.asian.start.split(':')[0]);
-      const londonStart = parseInt(killZoneConfig.london.start.split(':')[0]);
-      const nyStart = parseInt(killZoneConfig.ny.start.split(':')[0]);
-
-      const zones = [
-          { name: killZoneConfig.asian.label, start: asianStart, color: killZoneConfig.asian.color },
-          { name: killZoneConfig.london.label, start: londonStart, color: killZoneConfig.london.color },
-          { name: killZoneConfig.ny.label, start: nyStart, color: killZoneConfig.ny.color }
-      ].sort((a, b) => a.start - b.start);
-
-      const nextZone = zones.find(z => z.start > hour);
-      if (nextZone) {
-          return { name: `Pre-${nextZone.name}`, color: nextZone.color, isPre: true };
-      } else {
-          // Wrap around to first zone of next day
-          return { name: `Pre-${zones[0].name}`, color: zones[0].color, isPre: true };
-      }
   };
 
   const handleExportHTML = () => {
@@ -871,6 +875,65 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
       document.body.removeChild(link);
   };
 
+  const CustomSessionTick = (props: any) => {
+      const { x, y, payload } = props;
+      const session = sessionData.find(s => s.name === payload.value);
+      const isPre = session?.isPre;
+      // Pre-session labels are white, main sessions use their config color
+      const color = isPre ? '#ffffff' : (session ? session.color : '#71717a');
+      return (
+          <g transform={`translate(${x},${y})`}>
+              <text 
+                x={0} 
+                y={0} 
+                dy={8} 
+                dx={-2}
+                textAnchor="end" 
+                fill={color} 
+                fontSize={10} 
+                fontWeight="bold"
+                transform="rotate(-30)"
+              >
+                  {payload.value}
+              </text>
+          </g>
+      );
+  };
+
+  const CustomDayTick = (props: any) => {
+      const { x, y, payload } = props;
+      const dayColors: Record<string, string> = {
+          'Sun': '#EF4444', 'Mon': '#EAB308', 'Tue': '#EC4899', 'Wed': '#22C55E', 
+          'Thu': '#F97316', 'Fri': '#3B82F6', 'Sat': '#A855F7'
+      };
+      const color = dayColors[payload.value] || '#71717a';
+      return (
+          <g transform={`translate(${x},${y})`}>
+              <text x={0} y={0} dy={16} textAnchor="middle" fill={color} fontSize={12} fontWeight="bold">
+                  {payload.value}
+              </text>
+          </g>
+      );
+  };
+
+  const CustomTooltip = ({ active, payload, label }: any) => {
+      if (active && payload && payload.length) {
+          const data = payload[0].payload;
+          const pnl = data.pnl;
+          const color = pnl >= 0 ? '#4ade80' : '#f87171';
+          return (
+              <div className="bg-[#18181b] border border-[#3f3f46] p-2 rounded-lg text-[12px] shadow-xl">
+                  <div className="text-zinc-400 font-bold mb-1">{label}</div>
+                  <div style={{ color }} className="font-black">
+                      ${pnl.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </div>
+                  <div className="text-zinc-500 text-[10px]">{data.count} trades</div>
+              </div>
+          );
+      }
+      return null;
+  };
+
   return (
     <div ref={dashboardRef} className="fixed inset-0 z-50 bg-[#09090b]/95 backdrop-blur-xl flex flex-col overflow-hidden animate-in fade-in duration-200 font-sans">
       
@@ -993,11 +1056,21 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                 <div className="glass-panel rounded-2xl p-6 h-72 bg-white/[0.02]">
                     <h3 className="text-xs font-bold text-zinc-400 uppercase mb-4">Session (Thai Time)</h3>
                     <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={sessionData}>
+                        <BarChart data={sessionData} margin={{ bottom: 30 }}>
                             <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
-                            <XAxis dataKey="name" stroke="#71717a" fontSize={11} tickLine={false} axisLine={false} />
-                            <Tooltip cursor={{fill: 'transparent'}} contentStyle={{ backgroundColor: '#18181b', borderColor: '#3f3f46', fontSize: '12px', borderRadius: '8px' }} animationDuration={0} formatter={(val: number) => `$${formatCurrency(val)}`} />
-                            <Bar dataKey="pnl" radius={[4, 4, 0, 0]}>{sessionData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.pnl >= 0 ? '#4ade80' : '#f87171'} />)}</Bar>
+                            <XAxis dataKey="name" stroke="#71717a" fontSize={11} tickLine={false} axisLine={false} tick={<CustomSessionTick />} interval={0} />
+                            <Tooltip cursor={{fill: 'transparent'}} content={<CustomTooltip />} animationDuration={0} />
+                            <Bar dataKey="pnl" radius={[4, 4, 0, 0]}>
+                                {sessionData.map((entry, index) => (
+                                    <Cell 
+                                        key={`cell-${index}`} 
+                                        fill={entry.isPre ? 'transparent' : (entry.pnl >= 0 ? '#4ade80' : '#f87171')} 
+                                        stroke={entry.pnl >= 0 ? '#4ade80' : '#f87171'}
+                                        strokeWidth={entry.isPre ? 2 : 0}
+                                        strokeDasharray="0"
+                                    />
+                                ))}
+                            </Bar>
                         </BarChart>
                     </ResponsiveContainer>
                 </div>
@@ -1006,8 +1079,8 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                     <ResponsiveContainer width="100%" height="100%">
                          <BarChart data={dayData}>
                             <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
-                            <XAxis dataKey="name" stroke="#71717a" fontSize={11} tickLine={false} axisLine={false} />
-                            <Tooltip cursor={{fill: 'transparent'}} contentStyle={{ backgroundColor: '#18181b', borderColor: '#3f3f46', fontSize: '12px', borderRadius: '8px' }} animationDuration={0} formatter={(val: number) => `$${formatCurrency(val)}`} />
+                            <XAxis dataKey="name" stroke="#71717a" fontSize={11} tickLine={false} axisLine={false} tick={<CustomDayTick />} />
+                            <Tooltip cursor={{fill: 'transparent'}} content={<CustomTooltip />} animationDuration={0} />
                             <Bar dataKey="pnl" radius={[4, 4, 0, 0]}>{dayData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.pnl >= 0 ? '#4ade80' : '#f87171'} />)}</Bar>
                         </BarChart>
                     </ResponsiveContainer>
