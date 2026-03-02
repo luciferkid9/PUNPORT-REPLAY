@@ -344,7 +344,7 @@ export interface CouponInfo {
 /**
  * Verify if a coupon code is valid and if the device has already used one.
  */
-export const verifyCoupon = async (code: string, deviceId: string): Promise<{ success: boolean, coupon?: CouponInfo, error?: string }> => {
+export const verifyCoupon = async (code: string, deviceId: string, userId?: string): Promise<{ success: boolean, coupon?: CouponInfo, error?: string }> => {
     try {
         // 1. Check if THIS SPECIFIC coupon code has already been used on THIS device
         const checkDeviceUrl = new URL(`${SUPABASE_URL}/rest/v1/device_used_coupons`);
@@ -363,7 +363,13 @@ export const verifyCoupon = async (code: string, deviceId: string): Promise<{ su
         if (deviceResponse.ok) {
             const usedData = await deviceResponse.json();
             if (usedData.length > 0) {
-                return { success: false, error: "คูปองนี้ถูกใช้ไปแล้วในเครื่องนี้" };
+                const record = usedData[0];
+                // If used by the SAME user, it's valid (re-verification)
+                if (userId && record.user_id === userId) {
+                    // Proceed to check if coupon is still active/valid below
+                } else {
+                    return { success: false, error: "คูปองนี้ถูกใช้ไปแล้วในเครื่องนี้ (โดยบัญชีอื่น)" };
+                }
             }
         }
 
@@ -385,7 +391,7 @@ export const verifyCoupon = async (code: string, deviceId: string): Promise<{ su
 
         const couponData = await couponResponse.json();
         if (couponData.length === 0) {
-            return { success: false, error: "Invalid or inactive coupon code." };
+            return { success: false, error: "รหัสคูปองไม่ถูกต้อง หรือหมดอายุ" };
         }
 
         return { success: true, coupon: couponData[0] };
@@ -401,6 +407,34 @@ export const verifyCoupon = async (code: string, deviceId: string): Promise<{ su
  */
 export const recordCouponUsage = async (code: string, deviceId: string, userId?: string): Promise<boolean> => {
     try {
+        // 1. Check if already recorded (Idempotency)
+        const checkUrl = new URL(`${SUPABASE_URL}/rest/v1/device_used_coupons`);
+        checkUrl.searchParams.set('device_id', `eq.${deviceId}`);
+        checkUrl.searchParams.set('coupon_code', `eq.${code}`);
+        
+        const checkResponse = await fetch(checkUrl.toString(), {
+             method: 'GET',
+             headers: {
+                 'apikey': SUPABASE_KEY,
+                 'Authorization': `Bearer ${SUPABASE_KEY}`,
+                 'Content-Type': 'application/json'
+             }
+        });
+
+        if (checkResponse.ok) {
+            const existing = await checkResponse.json();
+            if (existing.length > 0) {
+                const record = existing[0];
+                // If same user, return true (Success)
+                if (userId && record.user_id === userId) {
+                    return true;
+                }
+                // If different user, return false (Blocked)
+                return false;
+            }
+        }
+
+        // 2. Insert new record
         const url = new URL(`${SUPABASE_URL}/rest/v1/device_used_coupons`);
         const body: any = {
             device_id: deviceId,

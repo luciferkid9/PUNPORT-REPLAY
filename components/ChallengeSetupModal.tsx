@@ -232,12 +232,25 @@ export const ChallengeSetupModal: React.FC<Props> = ({ profiles, onStart, onCrea
           const { data: { user } } = await supabase.auth.getUser();
           
           // Attempt to record usage on server
-          // If this fails (e.g., due to unique constraint on device_id + coupon_code), we block.
+          // We try to record, but if it fails (e.g. RLS issue or existing device record), 
+          // we SHOULD NOT block the user if the coupon itself was verified as valid.
+          // We prioritize updating the User Profile so they can access the app.
           const recorded = await recordCouponUsage(couponInfo.code, deviceId, user?.id);
           
           if (!recorded) {
-              alert("ไม่สามารถบันทึกการใช้คูปองได้ หรือคูปองนี้ถูกใช้ไปแล้วในเครื่องนี้");
-              return;
+              console.warn("Could not record coupon usage on server (likely device constraint). Proceeding anyway.");
+              // We do NOT return here. We allow the user to proceed.
+          }
+
+          // Update User Profile Trial (Extend Access)
+          // This ensures the user doesn't get asked for a coupon again for this duration.
+          if (user?.id && couponInfo.duration_days) {
+              const newExpiry = new Date();
+              newExpiry.setDate(newExpiry.getDate() + couponInfo.duration_days);
+              
+              await supabase.from('user_profiles').update({
+                  trial_ends_at: newExpiry.toISOString()
+              }).eq('id', user.id);
           }
           
           // FIX: Save to local device blacklist to prevent reuse across accounts (bypassing RLS limitations)
@@ -288,7 +301,8 @@ export const ChallengeSetupModal: React.FC<Props> = ({ profiles, onStart, onCrea
       setIsVerifying(true);
       setCouponError('');
       
-      const result = await verifyCoupon(couponCode.trim(), deviceId);
+      const { data: { user } } = await supabase.auth.getUser();
+      const result = await verifyCoupon(couponCode.trim(), deviceId, user?.id);
       
       if (result.success && result.coupon) {
           const duration = result.coupon.duration_days;
@@ -389,6 +403,16 @@ export const ChallengeSetupModal: React.FC<Props> = ({ profiles, onStart, onCrea
                     <button onClick={() => setView('LIST')} className="text-zinc-400 hover:text-white flex items-center space-x-2 px-3 py-1.5 rounded-lg hover:bg-white/5 transition-all">
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
                         <span className="text-xs font-bold uppercase">Back</span>
+                    </button>
+                )}
+
+                {view === 'LIST' && (
+                    <button 
+                        onClick={() => setView('CREATE')}
+                        className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-4 py-2 rounded-xl transition-all shadow-lg shadow-blue-900/20 hover:scale-105 active:scale-95 flex items-center space-x-1 uppercase tracking-wider"
+                    >
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M12 4v16m8-8H4" /></svg>
+                        <span>NEW</span>
                     </button>
                 )}
                 
@@ -598,18 +622,6 @@ export const ChallengeSetupModal: React.FC<Props> = ({ profiles, onStart, onCrea
                     className={`bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white text-xs font-bold px-8 py-3 rounded-xl transition-all shadow-lg shadow-blue-900/30 uppercase tracking-widest hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed`}
                 >
                     {isSyncingDates ? 'Syncing...' : 'Start Session'}
-                </button>
-            </div>
-        )}
-
-        {view === 'LIST' && (
-            <div className="absolute bottom-8 right-8 z-50">
-                <button 
-                    onClick={() => setView('CREATE')}
-                    className="bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold px-6 py-3 rounded-xl transition-all shadow-lg shadow-blue-900/30 hover:scale-105 active:scale-95 flex items-center space-x-2"
-                >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
-                    <span>CREATE NEW</span>
                 </button>
             </div>
         )}
