@@ -16,7 +16,7 @@ import { LotSizeCalculatorModal } from './components/LotSizeCalculatorModal';
 import { LotSizeWidget } from './components/LotSizeWidget';
 import { AuthScreen } from './components/AuthScreen';
 import { calculateSMA, calculateEMA, calculateRSI, calculateMACD, calculateRequiredMargin, calculatePnLInUSD, resampleCandles } from './services/logicEngine';
-import { fetchCandles, parseCSV, fetchHistoricalData, fetchContextCandles, fetchFutureCandles, fetchFirstCandle } from './services/api';
+import { fetchCandles, parseCSV, fetchHistoricalData, fetchContextCandles, fetchFutureCandles, fetchFirstCandle, fetchPriceAtTime } from './services/api';
 import { supabase } from './services/supabase';
 import { fetchUserSessions, saveUserSession, deleteUserSession } from './services/profileService';
 
@@ -72,6 +72,7 @@ const App: React.FC = () => {
   
   const warmupDataRef = useRef<Candle[]>([]);
   const isSwitchingTfRef = useRef<boolean>(false);
+  const hasReachedEndRef = useRef<boolean>(false);
 
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isLoadingHistory, setIsLoadingHistory] = useState<boolean>(false); 
@@ -80,6 +81,7 @@ const App: React.FC = () => {
   
   const [simState, setSimState] = useState<SimulationState>({ isPlaying: false, speed: 500, currentIndex: 0, maxIndex: 0 });
   const [currentSimTime, setCurrentSimTime] = useState<number>(0);
+  const [autoConversionPrice, setAutoConversionPrice] = useState<number | null>(null);
 
   const [account, setAccount] = useState<AccountState>({ balance: INITIAL_BALANCE, equity: INITIAL_BALANCE, maxEquity: INITIAL_BALANCE, maxDrawdown: 0, history: [] });
   const [showStats, setShowStats] = useState<boolean>(false);
@@ -104,7 +106,12 @@ const App: React.FC = () => {
   const [drawingSettings, setDrawingSettings] = useState<DrawingSettings>({ 
       color: '#3b82f6', 
       lineWidth: 2, 
-      lineStyle: 'solid' 
+      lineStyle: 'solid',
+      fillOpacity: 0.1,
+      showBorder: false,
+      rectTextVAlign: 'top',
+      rectTextHAlign: 'left',
+      rectTextPlacement: 'inside'
   });
 
   // State to hold the current Fib Levels preference (persists through session)
@@ -120,6 +127,7 @@ const App: React.FC = () => {
       position: 'bottom-right'
   });
   const [showLotSizeModal, setShowLotSizeModal] = useState<boolean>(false);
+  const lastProcessedIndexRef = useRef<number>(-1);
 
   const handleLotSizeConfigUpdate = (newConfig: LotSizeConfig) => {
       setLotSizeConfig(newConfig);
@@ -162,8 +170,44 @@ const App: React.FC = () => {
       return kz?.killZoneConfig || DEFAULT_KILLZONE_CONFIG;
   }, [currentDrawings]);
 
+  // AUTO CONVERSION PRICE FOR LOT SIZE CALCULATOR
+  useEffect(() => {
+    let isMounted = true;
+    const updateConversionPrice = async () => {
+        if (!lotSizeConfig.show) return;
+        
+        const tickerStr = activeSymbol.toUpperCase();
+        const cleanSymbol = tickerStr.replace(/[^A-Z]/g, '');
+        const accountCurrency = (lotSizeConfig.currency || 'USD').toUpperCase();
+        
+        let quoteCurrency = '';
+        if (cleanSymbol.length >= 6) quoteCurrency = cleanSymbol.substring(3, 6);
+
+        if (quoteCurrency && quoteCurrency !== accountCurrency) {
+            const multiplyPairs = ['AUD', 'NZD', 'GBP', 'EUR'];
+            const isMultiply = multiplyPairs.includes(quoteCurrency);
+            const pairToFetch = isMultiply ? `${quoteCurrency}${accountCurrency}` : `${accountCurrency}${quoteCurrency}`;
+            
+            try {
+                const price = await fetchPriceAtTime(pairToFetch as SymbolType, currentSimTime);
+                if (isMounted) setAutoConversionPrice(price);
+            } catch (e) {
+                console.error("Failed to fetch auto conversion price", e);
+            }
+        } else {
+            if (isMounted) setAutoConversionPrice(null);
+        }
+    };
+
+    updateConversionPrice();
+    
+    return () => { isMounted = false; };
+  }, [activeSymbol, currentSimTime, lotSizeConfig.currency, lotSizeConfig.show]);
+
   // 1. INIT & PERSISTENCE
   const isLoadedRef = useRef(false);
+  const profilesRef = useRef(profiles);
+  useEffect(() => { profilesRef.current = profiles; }, [profiles]);
 
   // Load User ID on Auth
   useEffect(() => {
@@ -274,6 +318,8 @@ const App: React.FC = () => {
                  const cloudP = cloudProfiles.find(cp => cp.id === p.id);
                  if (!cloudP || (p.lastPlayed || 0) > (cloudP.lastPlayed || 0)) {
                      await saveUserSession(userId, p);
+                     // Small delay to prevent rate limiting during initial sync
+                     await new Promise(r => setTimeout(r, 200));
                  }
             }
 
@@ -285,52 +331,106 @@ const App: React.FC = () => {
     syncProfiles();
   }, [isAuthenticated, userId]);
 
-  // Save Active Profile to Supabase (Debounced / Event-driven)
-  const saveActiveProfile = useCallback(async () => {
-      if (!userId || !activeProfileId) return;
-      const profileToSave = profiles.find(p => p.id === activeProfileId);
-      if (profileToSave) {
-          await saveUserSession(userId, profileToSave);
-      }
-  }, [userId, activeProfileId, profiles]);
+  // Refs for frequently changing state to avoid effect re-triggers
+  const accountRef = useRef(account);
+  const activeSymbolRef = useRef(activeSymbol);
+  const activeTimeframeRef = useRef(activeTimeframe);
+  const currentSimTimeRef = useRef(currentSimTime);
+  const allDrawingsRef = useRef(allDrawings);
+  const lotSizeConfigRef = useRef(lotSizeConfig);
 
-  // Auto-save every 30 seconds if playing
+  useEffect(() => { accountRef.current = account; }, [account]);
+  useEffect(() => { activeSymbolRef.current = activeSymbol; }, [activeSymbol]);
+  useEffect(() => { activeTimeframeRef.current = activeTimeframe; }, [activeTimeframe]);
+  useEffect(() => { currentSimTimeRef.current = currentSimTime; }, [currentSimTime]);
+  useEffect(() => { allDrawingsRef.current = allDrawings; }, [allDrawings]);
+  useEffect(() => { lotSizeConfigRef.current = lotSizeConfig; }, [lotSizeConfig]);
+
+  // Helper to get current profile state snapshot using REFS
+  const getActiveProfileSnapshot = useCallback(() => {
+      if (!activeProfileId) return null;
+      const baseProfile = profilesRef.current.find(p => p.id === activeProfileId);
+      if (!baseProfile) return null;
+      
+      return {
+          ...baseProfile,
+          lastPlayed: Date.now(),
+          account: accountRef.current,
+          activeSymbol: activeSymbolRef.current,
+          activeTimeframe: activeTimeframeRef.current,
+          currentSimTime: currentSimTimeRef.current > 0 ? currentSimTimeRef.current : baseProfile.currentSimTime,
+          drawings: allDrawingsRef.current,
+          lotSizeConfig: lotSizeConfigRef.current
+      };
+  }, [activeProfileId]);
+
+  // Save Active Profile to Supabase (Rate-limited)
+  const lastSaveTimeRef = useRef<number>(0);
+  const saveActiveProfile = useCallback(async (force = false) => {
+      if (!userId || !activeProfileId) return;
+      
+      // Rate limit: Only save if forced or at least 15 seconds passed since last save
+      const now = Date.now();
+      if (!force && now - lastSaveTimeRef.current < 15000) {
+          return;
+      }
+
+      const profileToSave = getActiveProfileSnapshot();
+      if (profileToSave) {
+          lastSaveTimeRef.current = now;
+          // Update local state to ensure consistency
+          setProfiles(prev => prev.map(p => p.id === activeProfileId ? profileToSave : p));
+          try {
+              await saveUserSession(userId, profileToSave);
+          } catch (err) {
+              console.error("Error saving session to user_metadata:", err);
+          }
+      }
+  }, [userId, activeProfileId, getActiveProfileSnapshot]);
+
+  // Auto-save every 60 seconds if playing (Cloud Sync) - Increased interval
   useEffect(() => {
       let interval: number;
       if (simState.isPlaying && userId && activeProfileId) {
           interval = window.setInterval(() => {
               saveActiveProfile();
-          }, 30000);
+          }, 60000);
       }
       return () => clearInterval(interval);
   }, [simState.isPlaying, userId, activeProfileId, saveActiveProfile]);
 
-  // Save on Pause
+  // Periodic Local State Update (5s) - Now stable because getActiveProfileSnapshot is stable
+  useEffect(() => {
+      let interval: number;
+      if (simState.isPlaying && activeProfileId) {
+          interval = window.setInterval(() => {
+              const snapshot = getActiveProfileSnapshot();
+              if (snapshot) {
+                  setProfiles(prev => prev.map(p => p.id === activeProfileId ? snapshot : p));
+              }
+          }, 5000);
+      }
+      return () => clearInterval(interval);
+  }, [simState.isPlaying, activeProfileId, getActiveProfileSnapshot]);
+
+  // Save on Pause - Debounced
   useEffect(() => {
       if (!simState.isPlaying && userId && activeProfileId && isLoadedRef.current) {
-          saveActiveProfile();
+          const timer = setTimeout(() => {
+              saveActiveProfile(true); // Force save on pause
+          }, 2000);
+          return () => clearTimeout(timer);
       }
-  }, [simState.isPlaying, userId, activeProfileId]);
+  }, [simState.isPlaying, userId, activeProfileId, saveActiveProfile]);
 
-  // Update Profile State (Local)
-  useEffect(() => {
-    if (activeProfileId) {
-        setProfiles(prev => prev.map(p => {
-            if (p.id === activeProfileId) {
-                return {
-                    ...p, lastPlayed: Date.now(), account, activeSymbol, activeTimeframe,
-                    currentSimTime: currentSimTime > 0 ? currentSimTime : p.currentSimTime, drawings: allDrawings
-                };
-            }
-            return p;
-        }));
-    }
-  }, [account, activeSymbol, activeTimeframe, currentSimTime, activeProfileId, allDrawings]);
+  // REMOVED: The useEffect that updated profiles on every tick (lines 356-368)
+  // This was likely causing the Maximum update depth exceeded error.
 
   useEffect(() => {
       let interval: number;
       if (activeProfileId) {
           interval = window.setInterval(() => {
+              // Only update timePlayed, avoid full profile update here to reduce re-renders
               setProfiles(prev => prev.map(p => {
                   if (p.id === activeProfileId) {
                       return { ...p, timePlayed: (p.timePlayed || 0) + 1 };
@@ -378,6 +478,7 @@ const App: React.FC = () => {
       setAllDrawings(profile.drawings || []); setChartData([]);
       warmupDataRef.current = [];
       lastKnownPriceRef.current = 0;
+      hasReachedEndRef.current = false;
       setShowDataError(false);
       setIsLoading(true); 
   };
@@ -386,6 +487,7 @@ const App: React.FC = () => {
       setActiveSymbol(newSymbol); setChartData([]);
       warmupDataRef.current = [];
       lastKnownPriceRef.current = 0;
+      hasReachedEndRef.current = false;
       setShowDataError(false);
       setSimState(prev => ({ ...prev, isPlaying: false }));
   };
@@ -404,8 +506,9 @@ const App: React.FC = () => {
   const handleExitProfile = async () => {
       // Save before exiting
       if (userId && activeProfileId) {
-          const profileToSave = profiles.find(p => p.id === activeProfileId);
+          const profileToSave = getActiveProfileSnapshot();
           if (profileToSave) {
+              setProfiles(prev => prev.map(p => p.id === activeProfileId ? profileToSave : p));
               await saveUserSession(userId, profileToSave);
           }
       }
@@ -415,15 +518,30 @@ const App: React.FC = () => {
       setChartData([]); setAllDrawings([]); setShowDataError(false); warmupDataRef.current = [];
   };
 
+  const handleStep = useCallback(() => {
+      const candles = chartDataRef.current;
+      const prevIndex = simState.currentIndex;
+      const maxIndex = simState.maxIndex;
+
+      if (!candles || prevIndex + 1 >= maxIndex) return;
+
+      const nextIndex = prevIndex + 1;
+      const nextCandle = candles[nextIndex];
+
+      // 1. Advance Index
+      setSimState(prev => ({ ...prev, currentIndex: nextIndex }));
+
+      // 2. Explicitly Advance Time so switching TFs aligns correctly
+      if (nextCandle) {
+          const duration = TF_SECONDS[activeTimeframe] || 60;
+          setCurrentSimTime(nextCandle.time + duration);
+      }
+  }, [simState.currentIndex, simState.maxIndex, activeTimeframe]);
+
   const tick = useCallback(() => {
-      setSimState(prev => {
-          const nextIndex = prev.currentIndex + 1;
-          if (nextIndex >= prev.maxIndex) {
-              return { ...prev, isPlaying: false };
-          }
-          return { ...prev, currentIndex: nextIndex };
-      });
-  }, []);
+      if (!simState.isPlaying || isLoading) return;
+      handleStep();
+  }, [simState.isPlaying, isLoading, handleStep]);
 
   const handleJumpToDate = (dateStr: string) => {
       const target = new Date(dateStr).getTime() / 1000;
@@ -476,6 +594,7 @@ const App: React.FC = () => {
      
      const loadInitialData = async () => {
          isSwitchingTfRef.current = true;
+         hasReachedEndRef.current = false;
          setIsLoading(true); setShowDataError(false); 
          try {
              const simTime = currentSimTime > 0 ? currentSimTime : activeProfile.startDate;
@@ -483,21 +602,27 @@ const App: React.FC = () => {
              const tfSecs = TF_SECONDS[activeTimeframe] || 60;
              const alignedTime = Math.floor(simTime / tfSecs) * tfSecs;
 
-             const totalContextNeeded = VISIBLE_CANDLES + WARMUP_BUFFER;
+             const HISTORY_BUFFER_SECONDS = 15 * 24 * 60 * 60; // 15 days of history
+             const historyCandles = Math.min(Math.ceil(HISTORY_BUFFER_SECONDS / tfSecs), 2000);
+             const warmupCandles = Math.max(WARMUP_BUFFER, historyCandles);
+
+             const candlesSinceStart = Math.ceil((alignedTime - startSession) / tfSecs);
+             const totalContextNeeded = Math.min(Math.max(VISIBLE_CANDLES + warmupCandles, candlesSinceStart + warmupCandles), 10000);
              const context = await fetchContextCandles(activeSymbol, activeTimeframe, alignedTime + tfSecs, totalContextNeeded, controller.signal);
              const future = await fetchFutureCandles(activeSymbol, activeTimeframe, alignedTime, VISIBLE_CANDLES, controller.signal);
              
              if (controller.signal.aborted) return;
 
              if (future.length > 0 || context.length > 0) {
-                 const validHistory = context.filter(c => c.time >= startSession);
-                 let finalWarmup = context.filter(c => c.time < startSession);
+                 // Include all context candles in validHistory so the user can scroll back to see the history before the start session
+                 const validHistory = context;
+                 const finalWarmup = context.filter(c => c.time < startSession);
+                 let padding: Candle[] = [];
                  if (finalWarmup.length < MIN_WARMUP) {
                      const first = context.length > 0 ? context[0] : (future.length > 0 ? future[0] : null);
                      if (first) {
                          const paddingCount = MIN_WARMUP - finalWarmup.length;
-                         const padding = Array(paddingCount).fill(null).map((_, i) => ({ ...first, time: first.time - ((paddingCount - i) * tfSecs) }));
-                         finalWarmup = [...padding, ...finalWarmup];
+                         padding = Array(paddingCount).fill(null).map((_, i) => ({ ...first, time: first.time - ((paddingCount - i) * tfSecs) }));
                      }
                  }
                  const visibleMap = new Map<number, Candle>();
@@ -525,10 +650,22 @@ const App: React.FC = () => {
                          setCurrentRealTimePrice(activeCandle.close); 
                      }
                  }
-                 warmupDataRef.current = finalWarmup;
+                 warmupDataRef.current = padding;
                  setChartData(finalVisible);
-                 setSimState(prev => ({ ...prev, currentIndex: newIndex, maxIndex: finalVisible.length }));
-                 setTimeout(() => { if (!controller.signal.aborted) { chartRef.current?.fitContent(); isSwitchingTfRef.current = false; } }, 50);
+                 setSimState(prev => ({ ...prev, currentIndex: Math.max(0, finalVisible.findIndex(c => c.time >= simTime) === -1 ? finalVisible.length - 1 : (finalVisible.findIndex(c => c.time >= simTime) > 0 ? finalVisible.findIndex(c => c.time >= simTime) - 1 : 0)), maxIndex: finalVisible.length }));
+                 setTimeout(() => { 
+                     if (!controller.signal.aborted) { 
+                         const chart = chartRef.current?.getChart();
+                         if (chart) {
+                              const viewRange = 150;
+                              const rightOffset = 20;
+                              const from = Math.max(0, newIndex - viewRange + rightOffset);
+                              const to = newIndex + rightOffset;
+                              chart.timeScale().setVisibleLogicalRange({ from, to });
+                         }
+                         isSwitchingTfRef.current = false; 
+                     } 
+                  }, 200);
              } else {
                  if (context.length === 0 && future.length === 0) {
                       const firstCandle = await fetchFirstCandle(activeSymbol, activeTimeframe, controller.signal);
@@ -541,7 +678,17 @@ const App: React.FC = () => {
                               setChartData(absoluteFuture);
                               setSimState(prev => ({ ...prev, currentIndex: 0, maxIndex: absoluteFuture.length }));
                               setCurrentSimTime(absoluteFuture[0].time + tfSecs);
-                              setTimeout(() => { if (!controller.signal.aborted) { chartRef.current?.fitContent(); isSwitchingTfRef.current = false; } }, 100);
+                              setTimeout(() => { 
+                                  if (!controller.signal.aborted) { 
+                                      const chart = chartRef.current?.getChart();
+                                      if (chart) {
+                                          const viewRange = 150;
+                                          const to = Math.min(absoluteFuture.length - 1, viewRange);
+                                          chart.timeScale().setVisibleLogicalRange({ from: 0, to });
+                                      }
+                                      isSwitchingTfRef.current = false; 
+                                  } 
+                              }, 200);
                               setIsLoading(false);
                               return;
                           }
@@ -557,7 +704,7 @@ const App: React.FC = () => {
 
   // Stream Buffering
   useEffect(() => {
-      if (!chartData.length || isLoadingFuture) return;
+      if (!chartData.length || isLoadingFuture || hasReachedEndRef.current) return;
       const bufferThreshold = 50; 
       const remaining = chartData.length - 1 - simState.currentIndex;
       if (remaining < bufferThreshold) {
@@ -574,6 +721,8 @@ const App: React.FC = () => {
                        if (newUnique.length === 0) return prev;
                        return [...prev, ...newUnique];
                   });
+              } else {
+                  hasReachedEndRef.current = true;
               }
               setIsLoadingFuture(false);
           };
@@ -593,26 +742,36 @@ const App: React.FC = () => {
   const handleLoadMoreHistory = async () => {
       if (isLoadingHistory || chartData.length === 0) return;
       setIsLoadingHistory(true);
+      
+      // Use the oldest available data point (from warmupDataRef if it exists, else chartData)
       const oldestTime = warmupDataRef.current.length > 0 ? warmupDataRef.current[0].time : chartData[0].time;
-      const totalToFetch = 500 + WARMUP_BUFFER; 
+      
+      // Fetch a substantial chunk of history (e.g., 1000 candles)
+      const totalToFetch = 1000; 
       const rawData = await fetchHistoricalData(activeSymbol, activeTimeframe, oldestTime, totalToFetch); 
+      
       if (rawData.length > 0) {
-          if (rawData.length > WARMUP_BUFFER) {
-              const newWarmup = rawData.slice(0, WARMUP_BUFFER);
-              const newVisible = rawData.slice(WARMUP_BUFFER);
-              const oldWarmup = warmupDataRef.current;
+          // Prepend new data to the existing sequence
+          // We maintain the WARMUP_BUFFER in warmupDataRef for indicator calculation accuracy
+          const allData = [...rawData, ...warmupDataRef.current, ...chartData];
+          
+          // Re-split into warmup and visible data
+          const newWarmup = allData.slice(0, WARMUP_BUFFER);
+          const newVisible = allData.slice(WARMUP_BUFFER);
+          
+          const addedCount = newVisible.length - chartData.length;
+          
+          if (addedCount > 0) {
               warmupDataRef.current = newWarmup;
-              setChartData(prev => [...newVisible, ...oldWarmup, ...prev]);
-              setSimState(prev => ({ ...prev, currentIndex: prev.currentIndex + newVisible.length + oldWarmup.length, maxIndex: prev.maxIndex + newVisible.length + oldWarmup.length }));
-          } else {
-              const oldWarmup = warmupDataRef.current;
-              const first = rawData[0];
-              const tfSecs = TF_SECONDS[activeTimeframe] || 60;
-              const fake = Array(MIN_WARMUP).fill(null).map((_, i) => ({ ...first, time: first.time - ((MIN_WARMUP - i) * tfSecs) }));
-              warmupDataRef.current = fake;
-              setChartData(prev => [...rawData, ...oldWarmup, ...prev]);
-              setSimState(prev => ({ ...prev, currentIndex: prev.currentIndex + rawData.length + oldWarmup.length, maxIndex: prev.maxIndex + rawData.length + oldWarmup.length }));
+              setChartData(newVisible);
+              setSimState(prev => ({ 
+                  ...prev, 
+                  currentIndex: prev.currentIndex + addedCount, 
+                  maxIndex: newVisible.length 
+              }));
           }
+      } else {
+          console.log("No more historical data available for", activeSymbol, activeTimeframe);
       }
       setIsLoadingHistory(false);
   };
@@ -622,34 +781,13 @@ const App: React.FC = () => {
       if (chartData.length > 0 && chartData[simState.currentIndex]) {
           const chartCandle = chartData[simState.currentIndex];
           setCurrentRealTimePrice(chartCandle.close);
+          // Always update currentSimTime when index changes so timeframe switching works correctly
           if (!isSwitchingTfRef.current && !isLoading) {
-              if (simState.isPlaying) {
-                  const duration = TF_SECONDS[activeTimeframe] || 60;
-                  setCurrentSimTime(chartCandle.time + duration);
-              }
+              const duration = TF_SECONDS[activeTimeframe] || 60;
+              setCurrentSimTime(chartCandle.time + duration);
           }
       }
-  }, [simState.currentIndex, chartData, activeTimeframe, simState.isPlaying, isLoading]);
-
-  const handleStep = () => {
-      const candles = chartDataRef.current;
-      const prevIndex = simState.currentIndex;
-      const maxIndex = simState.maxIndex;
-
-      if (!candles || prevIndex + 1 >= maxIndex) return;
-
-      const nextIndex = prevIndex + 1;
-      const nextCandle = candles[nextIndex];
-
-      // 1. Advance Index
-      setSimState(prev => ({ ...prev, currentIndex: nextIndex }));
-
-      // 2. Explicitly Advance Time so switching TFs aligns correctly
-      if (nextCandle) {
-          const duration = TF_SECONDS[activeTimeframe] || 60;
-          setCurrentSimTime(nextCandle.time + duration);
-      }
-  };
+  }, [simState.currentIndex, chartData, activeTimeframe, isLoading]);
 
   // ... (Indicators) ...
   const [indicatorConfigs, setIndicatorConfigs] = useState<IndicatorConfig[]>([
@@ -755,10 +893,10 @@ const App: React.FC = () => {
   };
 
   const handleAddAutoKillZone = () => {
-      const exists = allDrawings.some(d => d.type === 'KILLZONE' && d.symbol === activeSymbol);
-      if (exists) {
-          const kz = allDrawings.find(d => d.type === 'KILLZONE' && d.symbol === activeSymbol);
-          if (kz) setSelectedDrawingId(kz.id);
+      const kz = allDrawings.find(d => d.type === 'KILLZONE' && d.symbol === activeSymbol);
+      if (kz) {
+          // Toggle: If exists, remove it
+          handleDrawingDelete(kz.id);
           return;
       }
       const newKZ: DrawingObject = {
@@ -779,7 +917,7 @@ const App: React.FC = () => {
   };
 
   const handleDrawingCreate = (d: DrawingObject) => {
-      const symbolDrawing = { ...d, symbol: activeSymbol };
+      const symbolDrawing = { ...d, symbol: activeSymbol, timeframe: activeTimeframe };
       const isPosition = d.type === 'LONG_POSITION' || d.type === 'SHORT_POSITION';
       if (d.type === 'FIB') {
         // USE CURRENT DEFAULT LEVELS (Persistent state)
@@ -869,8 +1007,21 @@ const App: React.FC = () => {
 
   useEffect(() => {
       if (chartData.length === 0 || !tradingPrice || account.history.length === 0) return;
+      
+      // Prevent redundant processing for the same index
+      if (lastProcessedIndexRef.current === simState.currentIndex) return;
+      lastProcessedIndexRef.current = simState.currentIndex;
+
+      const openTrades = account.history.filter(t => t.status === OrderStatus.OPEN);
+      const pendingTrades = account.history.filter(t => t.status === OrderStatus.PENDING);
+      
+      if (openTrades.length === 0 && pendingTrades.length === 0) return;
+
       let floatingPnL = 0;
       let usedMargin = 0;
+      let hasChanges = false;
+
+      // 1. Calculate PnL and Margin for OPEN trades
       const updatedHistory = account.history.map(t => {
           if (t.status === OrderStatus.OPEN) {
                usedMargin += calculateRequiredMargin(t.symbol, t.quantity, t.entryPrice);
@@ -879,16 +1030,22 @@ const App: React.FC = () => {
                    const mult = t.side === OrderSide.LONG ? 1 : -1;
                    const rawPnL = (tradingPrice - t.entryPrice) * t.quantity * contractSize * mult;
                    const pnlUSD = calculatePnLInUSD(t.symbol, rawPnL, tradingPrice);
-                   return { ...t, pnl: pnlUSD }; 
+                   
+                   if (t.pnl !== pnlUSD) {
+                       hasChanges = true;
+                       return { ...t, pnl: pnlUSD };
+                   }
                }
-               return t;
           }
           return t;
       });
+
       updatedHistory.forEach(t => { if (t.status === OrderStatus.OPEN) floatingPnL += (t.pnl || 0); });
       const currentEquity = account.balance + floatingPnL;
       const marginLevel = usedMargin > 0 ? (currentEquity / usedMargin) * 100 : 999999;
-      if (currentEquity <= 0 || marginLevel <= STOP_OUT_LEVEL) {
+      
+      // 2. STOP OUT CHECK
+      if (openTrades.length > 0 && (currentEquity <= 0 || marginLevel <= STOP_OUT_LEVEL)) {
           console.warn(`STOP OUT TRIGGERED: Equity=${currentEquity}, MarginLevel=${marginLevel}`);
           const stopOutHistory = updatedHistory.map(t => {
               if (t.status === OrderStatus.OPEN) {
@@ -897,29 +1054,56 @@ const App: React.FC = () => {
               }
               return t;
           });
-          setAccount(prev => ({ ...prev, history: stopOutHistory, equity: currentEquity <= 0 ? 0 : currentEquity, balance: currentEquity <= 0 ? 0 : currentEquity, maxDrawdown: Math.max(prev.maxDrawdown, prev.maxEquity - 0) }));
+          setAccount(prev => ({ 
+              ...prev, 
+              history: stopOutHistory, 
+              equity: Math.max(0, currentEquity), 
+              balance: Math.max(0, currentEquity), 
+              maxDrawdown: Math.max(prev.maxDrawdown, prev.maxEquity - Math.max(0, currentEquity)) 
+          }));
           setSimState(prev => ({ ...prev, isPlaying: false }));
           alert(`⚠️ พอร์ตแตก! \n\nEquity: $${currentEquity.toFixed(2)} \nMargin Level: ${marginLevel.toFixed(2)}% \n\nระบบบังคับปิดออเดอร์ทั้งหมด (Force Close All)`);
           return; 
       }
-      setAccount(prev => ({ ...prev, history: updatedHistory, equity: currentEquity, maxEquity: Math.max(prev.maxEquity, currentEquity), maxDrawdown: Math.max(prev.maxDrawdown, prev.maxEquity - currentEquity) }));
+
+      // 3. Check SL/TP and Pending Orders
       const currentCandle = currentSlice.length > 0 ? currentSlice[currentSlice.length - 1] : null;
+      let finalHistory = [...updatedHistory];
+      let finalBalance = account.balance;
+      let finalEquity = currentEquity;
+      let triggeredAny = false;
+
       if (currentCandle) {
-          updatedHistory.filter(t => t.status === OrderStatus.OPEN).forEach(trade => {
-             if (trade.symbol === activeSymbol) {
-                 const hitHigh = currentCandle.high;
-                 const hitLow = currentCandle.low;
-                 if (trade.side === OrderSide.LONG) {
-                     if (trade.stopLoss > 0 && hitLow <= trade.stopLoss) handleCloseOrder(trade.id, trade.stopLoss);
-                     else if (trade.takeProfit > 0 && hitHigh >= trade.takeProfit) handleCloseOrder(trade.id, trade.takeProfit);
-                 } else {
-                     if (trade.stopLoss > 0 && hitHigh >= trade.stopLoss) handleCloseOrder(trade.id, trade.stopLoss);
-                     else if (trade.takeProfit > 0 && hitLow <= trade.takeProfit) handleCloseOrder(trade.id, trade.takeProfit);
-                 }
-             }
+          // Check SL/TP for OPEN trades
+          finalHistory = finalHistory.map(trade => {
+              if (trade.status === OrderStatus.OPEN && trade.symbol === activeSymbol) {
+                  const hitHigh = currentCandle.high;
+                  const hitLow = currentCandle.low;
+                  let exitPrice: number | null = null;
+
+                  if (trade.side === OrderSide.LONG) {
+                      if (trade.stopLoss > 0 && hitLow <= trade.stopLoss) exitPrice = trade.stopLoss;
+                      else if (trade.takeProfit > 0 && hitHigh >= trade.takeProfit) exitPrice = trade.takeProfit;
+                  } else {
+                      if (trade.stopLoss > 0 && hitHigh >= trade.stopLoss) exitPrice = trade.stopLoss;
+                      else if (trade.takeProfit > 0 && hitLow <= trade.takeProfit) exitPrice = trade.takeProfit;
+                  }
+
+                  if (exitPrice !== null) {
+                      triggeredAny = true;
+                      const contractSize = getContractSize(trade.symbol);
+                      const rawPnL = (exitPrice - trade.entryPrice) * trade.quantity * contractSize * (trade.side === OrderSide.LONG ? 1 : -1);
+                      const pnlUSD = calculatePnLInUSD(trade.symbol, rawPnL, exitPrice);
+                      finalBalance += pnlUSD;
+                      return { ...trade, status: OrderStatus.CLOSED, closePrice: exitPrice, closeTime: currentSimTime, pnl: pnlUSD };
+                  }
+              }
+              return trade;
           });
-          updatedHistory.filter(t => t.status === OrderStatus.PENDING).forEach(trade => {
-              if (trade.symbol === activeSymbol) {
+
+          // Check Pending Orders
+          finalHistory = finalHistory.map(trade => {
+              if (trade.status === OrderStatus.PENDING && trade.symbol === activeSymbol) {
                   const hitHigh = currentCandle.high >= trade.entryPrice;
                   const hitLow = currentCandle.low <= trade.entryPrice;
                   let triggered = false;
@@ -931,12 +1115,38 @@ const App: React.FC = () => {
                       if (trade.type === OrderType.STOP && hitLow) triggered = true;
                   }
                   if (triggered) {
-                     setAccount(prev => ({ ...prev, history: prev.history.map(t => t.id === trade.id ? { ...t, status: OrderStatus.OPEN, entryTime: currentCandle.time } : t) }));
+                      triggeredAny = true;
+                      return { ...trade, status: OrderStatus.OPEN, entryTime: currentCandle.time };
                   }
               }
+              return trade;
           });
       }
-  }, [tradingPrice, activeSymbol, simState.currentIndex]); 
+
+      if (triggeredAny) {
+          // Recalculate equity after closures
+          let newFloatingPnL = 0;
+          finalHistory.forEach(t => { if (t.status === OrderStatus.OPEN) newFloatingPnL += (t.pnl || 0); });
+          finalEquity = finalBalance + newFloatingPnL;
+          
+          setAccount(prev => ({
+              ...prev,
+              history: finalHistory,
+              balance: finalBalance,
+              equity: finalEquity,
+              maxEquity: Math.max(prev.maxEquity, finalEquity),
+              maxDrawdown: Math.max(prev.maxDrawdown, prev.maxEquity - finalEquity)
+          }));
+      } else if (hasChanges || currentEquity !== account.equity) {
+          setAccount(prev => ({ 
+              ...prev, 
+              history: updatedHistory, 
+              equity: currentEquity, 
+              maxEquity: Math.max(prev.maxEquity, currentEquity), 
+              maxDrawdown: Math.max(prev.maxDrawdown, prev.maxEquity - currentEquity) 
+          }));
+      }
+  }, [tradingPrice, activeSymbol, simState.currentIndex, currentSimTime]);
 
   if (!isAuthenticated) {
     return <AuthScreen onSuccess={() => setIsAuthenticated(true)} />;
@@ -1002,14 +1212,14 @@ const App: React.FC = () => {
                     <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.2} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5" /></svg>
                 </button>
                 <button 
-                    onClick={() => { setActiveTool('TRENDLINE'); setSelectedDrawingId(null); }} 
+                    onClick={() => { setActiveTool(prev => prev === 'TRENDLINE' ? 'CURSOR' : 'TRENDLINE'); setSelectedDrawingId(null); }} 
                     className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200 group relative ${activeTool === 'TRENDLINE' ? 'bg-blue-500/20 text-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.2)] ring-1 ring-blue-500/50' : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'}`} 
                     title="Trendline"
                 >
                     <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 19L19 5" /></svg>
                 </button>
                 <button 
-                    onClick={() => { setActiveTool('TEXT'); setSelectedDrawingId(null); }} 
+                    onClick={() => { setActiveTool(prev => prev === 'TEXT' ? 'CURSOR' : 'TEXT'); setSelectedDrawingId(null); }} 
                     className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200 group relative ${activeTool === 'TEXT' ? 'bg-blue-500/20 text-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.2)] ring-1 ring-blue-500/50' : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'}`} 
                     title="Text Box"
                 >
@@ -1023,11 +1233,18 @@ const App: React.FC = () => {
                     <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.2} d="M4 6a2 2 0 012-2h12a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM12 4v16M4 12h16" /></svg>
                 </button>
                 <button 
-                    onClick={() => { setActiveTool('FIB'); setSelectedDrawingId(null); }} 
+                    onClick={() => { setActiveTool(prev => prev === 'FIB' ? 'CURSOR' : 'FIB'); setSelectedDrawingId(null); }} 
                     className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200 group relative ${activeTool === 'FIB' ? 'bg-blue-500/20 text-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.2)] ring-1 ring-blue-500/50' : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'}`} 
                     title="Fibonacci"
                 >
                     <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.2} d="M4 5h16M4 9h10M4 14h14M4 19h16" /></svg>
+                </button>
+                <button 
+                    onClick={() => { setActiveTool(prev => prev === 'RECTANGLE' ? 'CURSOR' : 'RECTANGLE'); setSelectedDrawingId(null); }} 
+                    className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200 group relative ${activeTool === 'RECTANGLE' ? 'bg-blue-500/20 text-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.2)] ring-1 ring-blue-500/50' : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'}`} 
+                    title="Rectangle / Box"
+                >
+                    <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.2} d="M4 6a2 2 0 012-2h12a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V6z" /></svg>
                 </button>
              </div>
 
@@ -1035,14 +1252,14 @@ const App: React.FC = () => {
 
              <div className="space-y-2 w-full flex flex-col items-center">
                  <button 
-                    onClick={() => { setActiveTool('LONG_POSITION'); setSelectedDrawingId(null); }} 
+                    onClick={() => { setActiveTool(prev => prev === 'LONG_POSITION' ? 'CURSOR' : 'LONG_POSITION'); setSelectedDrawingId(null); }} 
                     className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200 group relative ${activeTool === 'LONG_POSITION' ? 'bg-green-500/20 text-green-400 shadow-[0_0_15px_rgba(34,197,94,0.3)] ring-1 ring-green-500/50' : 'text-zinc-500 hover:text-green-400 hover:bg-white/5'}`} 
                     title="Long Position"
                  >
                     <svg className="w-5 h-5 transition-transform group-hover:scale-110" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.2} d="M12 19V5M12 5l-4 4M12 5l4 4M5 12h14" strokeDasharray="4 4"/></svg>
                 </button>
                 <button 
-                    onClick={() => { setActiveTool('SHORT_POSITION'); setSelectedDrawingId(null); }} 
+                    onClick={() => { setActiveTool(prev => prev === 'SHORT_POSITION' ? 'CURSOR' : 'SHORT_POSITION'); setSelectedDrawingId(null); }} 
                     className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-200 group relative ${activeTool === 'SHORT_POSITION' ? 'bg-red-500/20 text-red-400 shadow-[0_0_15px_rgba(239,68,68,0.3)] ring-1 ring-red-500/50' : 'text-zinc-500 hover:text-red-400 hover:bg-white/5'}`} 
                     title="Short Position"
                 >
@@ -1124,7 +1341,7 @@ const App: React.FC = () => {
         <div className="flex-1 flex flex-col min-w-0 relative gap-3">
             <div className="flex-1 relative rounded-2xl overflow-hidden shadow-2xl ring-1 ring-white/5">
                 <ChartContainer 
-                    key={activeSymbol} 
+                    key={`${activeSymbol}-${activeTimeframe}`} 
                     activeSymbol={activeSymbol}
                     interval={TF_SECONDS[activeTimeframe]} // Pass interval to chart
                     ref={chartRef} 
@@ -1144,9 +1361,10 @@ const App: React.FC = () => {
                     lotSizeConfig={lotSizeConfig}
                     onLotSizeWidgetDoubleClick={() => setShowLotSizeModal(true)}
                     currentPrice={tradingPrice}
+                    autoConversionPrice={autoConversionPrice}
                 />
                 
-                <LotSizeCalculatorModal isOpen={showLotSizeModal} onClose={() => setShowLotSizeModal(false)} config={lotSizeConfig} onSave={handleLotSizeConfigUpdate} />
+                <LotSizeCalculatorModal isOpen={showLotSizeModal} onClose={() => setShowLotSizeModal(false)} config={lotSizeConfig} onSave={handleLotSizeConfigUpdate} activeSymbol={activeSymbol} />
 
                 {/* MARKET STRUCTURE WIDGET */}
                 <MarketStructureWidget 

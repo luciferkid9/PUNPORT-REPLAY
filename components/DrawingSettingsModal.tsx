@@ -129,9 +129,9 @@ export const DrawingSettingsModal: React.FC<Props> = ({ drawing, onSave, onClose
                         <div className="flex-1 grid grid-cols-12 gap-2 items-center">
                             <input type="text" value={localDrawing.killZoneConfig.asian.label} onChange={(e) => handleSessionChange('asian', 'label', e.target.value)} className="col-span-3 bg-black/30 border border-white/5 rounded px-2 py-1 text-xs text-white" />
                             <div className="col-span-1"><input type="color" value={localDrawing.killZoneConfig.asian.color} onChange={(e) => handleSessionChange('asian', 'color', e.target.value)} className="w-6 h-6 rounded bg-transparent border-none cursor-pointer" /></div>
-                            <input type="time" value={localDrawing.killZoneConfig.asian.start} onChange={(e) => handleSessionChange('asian', 'start', e.target.value)} className="col-span-3 bg-black/30 border border-white/5 rounded px-1 py-1 text-xs text-white text-center" />
+                            <input type="time" value={localDrawing.killZoneConfig.asian.start} onChange={(e) => handleSessionChange('asian', 'start', e.target.value)} className="col-span-3 bg-[#09090b] border border-white/5 rounded px-1 py-1 text-xs text-white text-center" />
                             <span className="col-span-1 text-center text-zinc-500">-</span>
-                            <input type="time" value={localDrawing.killZoneConfig.asian.end} onChange={(e) => handleSessionChange('asian', 'end', e.target.value)} className="col-span-3 bg-black/30 border border-white/5 rounded px-1 py-1 text-xs text-white text-center" />
+                            <input type="time" value={localDrawing.killZoneConfig.asian.end} onChange={(e) => handleSessionChange('asian', 'end', e.target.value)} className="col-span-3 bg-[#09090b] border border-white/5 rounded px-1 py-1 text-xs text-white text-center" />
                         </div>
                     </div>
 
@@ -139,11 +139,11 @@ export const DrawingSettingsModal: React.FC<Props> = ({ drawing, onSave, onClose
                     <div className="flex items-center gap-2">
                         <input type="checkbox" checked={localDrawing.killZoneConfig.london.enabled} onChange={(e) => handleSessionChange('london', 'enabled', e.target.checked)} className="rounded border-zinc-600 bg-zinc-800 accent-blue-500 h-4 w-4" />
                         <div className="flex-1 grid grid-cols-12 gap-2 items-center">
-                            <input type="text" value={localDrawing.killZoneConfig.london.label} onChange={(e) => handleSessionChange('london', 'label', e.target.value)} className="col-span-3 bg-black/30 border border-white/5 rounded px-2 py-1 text-xs text-white" />
+                            <input type="text" value={localDrawing.killZoneConfig.london.label} onChange={(e) => handleSessionChange('london', 'label', e.target.value)} className="col-span-3 bg-[#09090b] border border-white/5 rounded px-2 py-1 text-xs text-white" />
                             <div className="col-span-1"><input type="color" value={localDrawing.killZoneConfig.london.color} onChange={(e) => handleSessionChange('london', 'color', e.target.value)} className="w-6 h-6 rounded bg-transparent border-none cursor-pointer" /></div>
-                            <input type="time" value={localDrawing.killZoneConfig.london.start} onChange={(e) => handleSessionChange('london', 'start', e.target.value)} className="col-span-3 bg-black/30 border border-white/5 rounded px-1 py-1 text-xs text-white text-center" />
+                            <input type="time" value={localDrawing.killZoneConfig.london.start} onChange={(e) => handleSessionChange('london', 'start', e.target.value)} className="col-span-3 bg-[#09090b] border border-white/5 rounded px-1 py-1 text-xs text-white text-center" />
                             <span className="col-span-1 text-center text-zinc-500">-</span>
-                            <input type="time" value={localDrawing.killZoneConfig.london.end} onChange={(e) => handleSessionChange('london', 'end', e.target.value)} className="col-span-3 bg-black/30 border border-white/5 rounded px-1 py-1 text-xs text-white text-center" />
+                            <input type="time" value={localDrawing.killZoneConfig.london.end} onChange={(e) => handleSessionChange('london', 'end', e.target.value)} className="col-span-3 bg-[#09090b] border border-white/5 rounded px-1 py-1 text-xs text-white text-center" />
                         </div>
                     </div>
 
@@ -151,11 +151,11 @@ export const DrawingSettingsModal: React.FC<Props> = ({ drawing, onSave, onClose
                     <div className="flex items-center gap-2">
                         <input type="checkbox" checked={localDrawing.killZoneConfig.ny.enabled} onChange={(e) => handleSessionChange('ny', 'enabled', e.target.checked)} className="rounded border-zinc-600 bg-zinc-800 accent-blue-500 h-4 w-4" />
                         <div className="flex-1 grid grid-cols-12 gap-2 items-center">
-                            <input type="text" value={localDrawing.killZoneConfig.ny.label} onChange={(e) => handleSessionChange('ny', 'label', e.target.value)} className="col-span-3 bg-black/30 border border-white/5 rounded px-2 py-1 text-xs text-white" />
+                            <input type="text" value={localDrawing.killZoneConfig.ny.label} onChange={(e) => handleSessionChange('ny', 'label', e.target.value)} className="col-span-3 bg-[#09090b] border border-white/5 rounded px-2 py-1 text-xs text-white" />
                             <div className="col-span-1"><input type="color" value={localDrawing.killZoneConfig.ny.color} onChange={(e) => handleSessionChange('ny', 'color', e.target.value)} className="w-6 h-6 rounded bg-transparent border-none cursor-pointer" /></div>
-                            <input type="time" value={localDrawing.killZoneConfig.ny.start} onChange={(e) => handleSessionChange('ny', 'start', e.target.value)} className="col-span-3 bg-black/30 border border-white/5 rounded px-1 py-1 text-xs text-white text-center" />
+                            <input type="time" value={localDrawing.killZoneConfig.ny.start} onChange={(e) => handleSessionChange('ny', 'start', e.target.value)} className="col-span-3 bg-[#09090b] border border-white/5 rounded px-1 py-1 text-xs text-white text-center" />
                             <span className="col-span-1 text-center text-zinc-500">-</span>
-                            <input type="time" value={localDrawing.killZoneConfig.ny.end} onChange={(e) => handleSessionChange('ny', 'end', e.target.value)} className="col-span-3 bg-black/30 border border-white/5 rounded px-1 py-1 text-xs text-white text-center" />
+                            <input type="time" value={localDrawing.killZoneConfig.ny.end} onChange={(e) => handleSessionChange('ny', 'end', e.target.value)} className="col-span-3 bg-[#09090b] border border-white/5 rounded px-1 py-1 text-xs text-white text-center" />
                         </div>
                     </div>
 
@@ -235,10 +235,90 @@ export const DrawingSettingsModal: React.FC<Props> = ({ drawing, onSave, onClose
                                 <textarea 
                                     value={localDrawing.text || ''}
                                     onChange={(e) => setLocalDrawing({...localDrawing, text: e.target.value})}
-                                    className="w-full bg-black/20 border border-white/5 rounded-lg p-2 text-sm text-white outline-none focus:border-blue-500/50 min-h-[60px]"
+                                    className="w-full bg-[#09090b] border border-white/5 rounded-lg p-2 text-sm text-white outline-none focus:border-blue-500/50 min-h-[60px]"
                                     placeholder={localDrawing.type === 'TEXT' ? "Enter text..." : "Enter label (optional)..."}
                                 />
                             </div>
+                            {localDrawing.type === 'RECTANGLE' && (
+                                <div className="space-y-3 mt-3">
+                                    <div className="flex flex-wrap gap-1.5">
+                                        {['DZ', 'SZ', 'FVG'].map(label => (
+                                            <button
+                                                key={label}
+                                                onClick={() => setLocalDrawing({...localDrawing, text: label})}
+                                                className={`px-2 py-1 border rounded text-[10px] font-bold transition-all ${localDrawing.text === label ? 'bg-blue-500/20 border-blue-500 text-blue-400' : 'bg-white/5 border-white/10 text-zinc-400 hover:text-blue-400 hover:bg-blue-500/10'}`}
+                                            >
+                                                {label}
+                                            </button>
+                                        ))}
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <div>
+                                            <label className="text-[10px] text-zinc-500 block mb-1 font-bold">Placement</label>
+                                            <select 
+                                                value={localDrawing.rectTextPlacement || 'inside'}
+                                                onChange={(e) => setLocalDrawing({...localDrawing, rectTextPlacement: e.target.value as any})}
+                                                className="w-full bg-[#09090b] border border-white/5 rounded-lg p-1.5 text-[10px] text-zinc-200 outline-none focus:border-blue-500/50"
+                                            >
+                                                <option value="inside">Inside (ภายใน)</option>
+                                                <option value="outside">Outside (ภายนอก)</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="text-[10px] text-zinc-500 block mb-1 font-bold">Alignment</label>
+                                            <select 
+                                                value={localDrawing.rectTextVAlign || 'top'}
+                                                onChange={(e) => setLocalDrawing({...localDrawing, rectTextVAlign: e.target.value as any})}
+                                                className="w-full bg-[#09090b] border border-white/5 rounded-lg p-1.5 text-[10px] text-zinc-200 outline-none focus:border-blue-500/50"
+                                            >
+                                                <option value="top">Top (บน)</option>
+                                                <option value="middle">Center (กลาง)</option>
+                                                <option value="bottom">Bottom (ล่าง)</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="text-[10px] text-zinc-500 block mb-1 font-bold">Horizontal Align</label>
+                                        <select 
+                                            value={localDrawing.rectTextHAlign || 'left'}
+                                            onChange={(e) => setLocalDrawing({...localDrawing, rectTextHAlign: e.target.value as any})}
+                                            className="w-full bg-[#09090b] border border-white/5 rounded-lg p-1.5 text-[10px] text-zinc-200 outline-none focus:border-blue-500/50"
+                                        >
+                                            <option value="left">Left (ซ้าย)</option>
+                                            <option value="center">Center (กลาง)</option>
+                                            <option value="right">Right (ขวา)</option>
+                                        </select>
+                                    </div>
+                                    <div className="flex items-center justify-between pt-2 border-t border-white/5">
+                                        <span className="text-xs text-zinc-400">Show Border</span>
+                                        <button 
+                                            onClick={() => setLocalDrawing({...localDrawing, showBorder: !localDrawing.showBorder})}
+                                            className={`w-10 h-5 rounded-full transition-all relative ${localDrawing.showBorder ? 'bg-blue-600' : 'bg-zinc-700'}`}
+                                        >
+                                            <div className={`absolute top-1 w-3 h-3 rounded-full bg-white transition-all ${localDrawing.showBorder ? 'left-6' : 'left-1'}`} />
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+                            {localDrawing.type === 'TRENDLINE' && (
+                                <div>
+                                    <label className="text-[10px] text-zinc-500 block mb-1 font-bold">Text Position</label>
+                                    <div className="flex gap-2">
+                                        <button 
+                                            onClick={() => setLocalDrawing({...localDrawing, textPosition: 'top'})}
+                                            className={`flex-1 py-1.5 text-[10px] font-bold rounded-lg border transition-all ${localDrawing.textPosition !== 'bottom' ? 'bg-blue-600/20 border-blue-500 text-blue-400' : 'bg-[#09090b] border-white/5 text-zinc-500 hover:text-zinc-300'}`}
+                                        >
+                                            Top
+                                        </button>
+                                        <button 
+                                            onClick={() => setLocalDrawing({...localDrawing, textPosition: 'bottom'})}
+                                            className={`flex-1 py-1.5 text-[10px] font-bold rounded-lg border transition-all ${localDrawing.textPosition === 'bottom' ? 'bg-blue-600/20 border-blue-500 text-blue-400' : 'bg-[#09090b] border-white/5 text-zinc-500 hover:text-zinc-300'}`}
+                                        >
+                                            Bottom
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
                             {localDrawing.type === 'TEXT' && (
                                 <div>
                                     <label className="text-[10px] text-zinc-500 block mb-1 font-bold">Font Size</label>
@@ -246,7 +326,7 @@ export const DrawingSettingsModal: React.FC<Props> = ({ drawing, onSave, onClose
                                         type="number"
                                         value={localDrawing.fontSize || 14}
                                         onChange={(e) => setLocalDrawing({...localDrawing, fontSize: parseInt(e.target.value)})}
-                                        className="w-full bg-black/20 border border-white/5 rounded-lg p-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50"
+                                        className="w-full bg-[#09090b] border border-white/5 rounded-lg p-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50"
                                     />
                                 </div>
                             )}
@@ -257,7 +337,7 @@ export const DrawingSettingsModal: React.FC<Props> = ({ drawing, onSave, onClose
                     <div className="space-y-3">
                         <div>
                             <label className="text-[10px] text-zinc-500 block mb-1 font-bold">{localDrawing.type === 'TEXT' ? 'Text Color' : 'Line Color'}</label>
-                            <div className="flex items-center space-x-2 bg-black/20 p-1.5 rounded-lg border border-white/5">
+                            <div className="flex items-center space-x-2 bg-[#09090b] p-1.5 rounded-lg border border-white/5">
                                 <input 
                                     type="color" 
                                     value={localDrawing.color}
@@ -274,7 +354,7 @@ export const DrawingSettingsModal: React.FC<Props> = ({ drawing, onSave, onClose
                                     <select 
                                         value={localDrawing.lineWidth}
                                         onChange={(e) => setLocalDrawing({...localDrawing, lineWidth: Number(e.target.value)})}
-                                        className="w-full bg-black/20 border border-white/5 rounded-lg p-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50"
+                                        className="w-full bg-[#09090b] border border-white/5 rounded-lg p-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50"
                                     >
                                         <option value={1}>1px</option>
                                         <option value={2}>2px</option>
@@ -287,13 +367,39 @@ export const DrawingSettingsModal: React.FC<Props> = ({ drawing, onSave, onClose
                                     <select 
                                         value={localDrawing.lineStyle}
                                         onChange={(e) => setLocalDrawing({...localDrawing, lineStyle: e.target.value as LineStyle})}
-                                        className="w-full bg-black/20 border border-white/5 rounded-lg p-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50"
+                                        className="w-full bg-[#09090b] border border-white/5 rounded-lg p-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500/50"
                                     >
                                         <option value="solid">Solid</option>
                                         <option value="dashed">Dashed</option>
                                         <option value="dotted">Dotted</option>
                                     </select>
                                 </div>
+                                {localDrawing.type === 'RECTANGLE' && (
+                                    <div className="space-y-3">
+                                        <div>
+                                            <div className="flex justify-between text-[10px] text-zinc-500 mb-1 font-bold">
+                                                <span>Fill Opacity</span>
+                                                <span>{Math.round((localDrawing.fillOpacity !== undefined ? localDrawing.fillOpacity : 0.05) * 100)}%</span>
+                                            </div>
+                                            <input 
+                                                type="range" 
+                                                min="0" max="1" step="0.05"
+                                                value={localDrawing.fillOpacity !== undefined ? localDrawing.fillOpacity : 0.05}
+                                                onChange={(e) => setLocalDrawing({...localDrawing, fillOpacity: parseFloat(e.target.value)})}
+                                                className="w-full h-1.5 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                                            />
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <input 
+                                                type="checkbox" 
+                                                checked={localDrawing.showBorder !== false} 
+                                                onChange={(e) => setLocalDrawing({...localDrawing, showBorder: e.target.checked})}
+                                                className="rounded border-zinc-600 bg-zinc-800 accent-blue-500 h-3.5 w-3.5"
+                                            />
+                                            <span className="text-[10px] text-zinc-300 font-bold">Show Border</span>
+                                        </div>
+                                    </div>
+                                )}
                             </>
                         )}
                     </div>
@@ -340,7 +446,7 @@ export const DrawingSettingsModal: React.FC<Props> = ({ drawing, onSave, onClose
                                         type="number" step="0.001"
                                         value={fib.level}
                                         onChange={(e) => handleLevelChange(idx, 'level', parseFloat(e.target.value))}
-                                        className="w-full bg-black/30 border border-white/5 rounded p-0.5 text-xs text-center text-zinc-200 font-mono outline-none"
+                                        className="w-full bg-[#09090b] border border-white/5 rounded p-0.5 text-xs text-center text-zinc-200 font-mono outline-none"
                                     />
                                 </div>
                                 <div className="col-span-4 flex items-center justify-center">
@@ -379,7 +485,7 @@ export const DrawingSettingsModal: React.FC<Props> = ({ drawing, onSave, onClose
                                 value={localDrawing.p1.price}
                                 onChange={(e) => setLocalDrawing({...localDrawing, p1: {...localDrawing.p1, price: parseFloat(e.target.value)}})}
                                 onBlur={(e) => setLocalDrawing({...localDrawing, p1: {...localDrawing.p1, price: roundPrice(parseFloat(e.target.value))}})}
-                                className="w-full bg-black/20 border border-white/5 rounded-lg p-2 text-sm text-white outline-none focus:border-blue-500/50 font-mono"
+                                className="w-full bg-[#09090b] border border-white/5 rounded-lg p-2 text-sm text-white outline-none focus:border-blue-500/50 font-mono"
                             />
                         </div>
                         <div>
@@ -396,7 +502,7 @@ export const DrawingSettingsModal: React.FC<Props> = ({ drawing, onSave, onClose
                                 value={localDrawing.stopPrice || 0}
                                 onChange={(e) => setLocalDrawing({...localDrawing, stopPrice: parseFloat(e.target.value)})}
                                 onBlur={(e) => setLocalDrawing({...localDrawing, stopPrice: roundPrice(parseFloat(e.target.value))})}
-                                className="w-full bg-black/20 border border-white/5 rounded-lg p-2 text-sm text-red-400 outline-none focus:border-red-500/50 font-mono"
+                                className="w-full bg-[#09090b] border border-white/5 rounded-lg p-2 text-sm text-red-400 outline-none focus:border-red-500/50 font-mono"
                             />
                         </div>
                         <div>
@@ -413,7 +519,7 @@ export const DrawingSettingsModal: React.FC<Props> = ({ drawing, onSave, onClose
                                 value={localDrawing.targetPrice || 0}
                                 onChange={(e) => setLocalDrawing({...localDrawing, targetPrice: parseFloat(e.target.value)})}
                                 onBlur={(e) => setLocalDrawing({...localDrawing, targetPrice: roundPrice(parseFloat(e.target.value))})}
-                                className="w-full bg-black/20 border border-white/5 rounded-lg p-2 text-sm text-green-400 outline-none focus:border-green-500/50 font-mono"
+                                className="w-full bg-[#09090b] border border-white/5 rounded-lg p-2 text-sm text-green-400 outline-none focus:border-green-500/50 font-mono"
                             />
                         </div>
                     </div>
@@ -422,7 +528,7 @@ export const DrawingSettingsModal: React.FC<Props> = ({ drawing, onSave, onClose
         </div>
 
         {/* Footer */}
-        <div className="p-3 border-t border-white/10 flex justify-end space-x-2 bg-black/20 shrink-0">
+        <div className="p-3 border-t border-white/10 flex justify-end space-x-2 bg-[#09090b] shrink-0">
             <button onClick={onClose} className="px-3 py-1.5 text-xs font-bold text-zinc-400 hover:text-white transition-colors">Cancel</button>
             <button 
                 onClick={() => onSave(localDrawing)}

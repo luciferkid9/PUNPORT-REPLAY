@@ -6,9 +6,10 @@ interface Props {
     activeSymbol: SymbolType;
     currentPrice: number;
     onDoubleClick: () => void;
+    autoConversionPrice?: number | null;
 }
 
-export const LotSizeWidget: React.FC<Props> = ({ config, activeSymbol, currentPrice, onDoubleClick }) => {
+export const LotSizeWidget: React.FC<Props> = ({ config, activeSymbol, currentPrice, onDoubleClick, autoConversionPrice }) => {
     if (!config.show) return null;
 
     const calculation = useMemo(() => {
@@ -19,64 +20,86 @@ export const LotSizeWidget: React.FC<Props> = ({ config, activeSymbol, currentPr
             return { riskAmount, units: 0, lots: 0 };
         }
 
-        // Step 2: Determine Asset Properties based on symbol
-        let pipSize = 0.0001;
-        let contractSize = 100000;
+        // Step 2: Determine Asset Properties based on user-provided logic
+        const tickerStr = activeSymbol.toUpperCase();
+        const isJPY = tickerStr.includes('JPY');
+        const isXAU = tickerStr.includes('XAU') || tickerStr.includes('GOLD');
+        const isXAG = tickerStr.includes('XAG') || tickerStr.includes('SILVER');
 
-        if (activeSymbol.includes('JPY')) {
-            pipSize = 0.01;
-            contractSize = 100000;
-        } else if (activeSymbol.includes('XAU')) {
-            pipSize = 0.01;
-            contractSize = 100;
-        } else if (activeSymbol.includes('XAG')) {
-            pipSize = 0.01;
-            contractSize = 5000;
-        } else {
-            pipSize = 0.0001;
-            contractSize = 100000;
-        }
-
-        // Step 3: Calculate Pip Value
-        // conversionRate: The current exchange rate to convert the Quote Currency back to Account Currency.
-        let conversionRate = 1.0;
-        const accountCurrency = config.currency || 'USD';
+        // User logic: pipSize = (isJPY or isXAU or isXAG) ? 0.01 : 0.0001
+        const pipSize = (isJPY || isXAU || isXAG) ? 0.01 : 0.0001;
         
-        // Heuristic to determine Quote Currency (Last 3 chars)
-        const quoteCurrency = activeSymbol.length >= 3 ? activeSymbol.slice(-3) : '';
-        const baseCurrency = activeSymbol.length >= 6 ? activeSymbol.slice(0, activeSymbol.length - 3) : '';
+        // User logic: lotSizeUnit = 100,000 (except Gold 100, Silver 5000)
+        const lotSizeUnit = 100000.0;
+        const goldLotSize = 100.0;
+        const silverLotSize = 5000.0;
+        const contractSize = isXAU ? goldLotSize : (isXAG ? silverLotSize : lotSizeUnit);
+
+        // Step 3: Calculate Pip Value in Account Currency
+        let conversionRate = 1.0;
+        const accountCurrency = (config.currency || 'USD').toUpperCase();
+        
+        const cleanSymbol = tickerStr.replace(/[^A-Z]/g, '');
+        let baseCurrency = '';
+        let quoteCurrency = '';
+        
+        if (cleanSymbol.length >= 6) {
+            baseCurrency = cleanSymbol.substring(0, 3);
+            quoteCurrency = cleanSymbol.substring(3, 6);
+        } else if (isXAU || isXAG) {
+            baseCurrency = isXAU ? 'XAU' : 'XAG';
+            quoteCurrency = 'USD';
+        }
 
         if (quoteCurrency === accountCurrency) {
             // e.g. EURUSD, XAUUSD -> Quote is USD. Account is USD. Rate = 1.
             conversionRate = 1.0;
         } else if (baseCurrency === accountCurrency) {
             // e.g. USDJPY -> Base is USD. Quote is JPY. Account is USD.
-            // We need JPY -> USD rate.
-            // Current Price is USD/JPY.
-            // 1 USD = Price JPY.
-            // 1 JPY = 1 / Price USD.
+            // Pip Value = (PipSize / Price) * LotSize
             if (currentPrice > 0) conversionRate = 1.0 / currentPrice;
         } else {
-            // Cross pair (e.g. EURJPY) or unknown.
-            // Default to 1.0 as we might not have the specific conversion pair price (e.g. USDJPY) available in this context.
-            // However, for JPY pairs, 1.0 is significantly off.
-            // If it's a JPY quote but not USDJPY, we ideally need USDJPY price.
-            // Without it, we fallback to 1.0 (or user must provide it).
-            conversionRate = 1.0;
+            // Cross pair case (e.g. EURJPY, EURAUD)
+            // Use autoConversionPrice fetched from DB in App.tsx
+            const effectiveConvPrice = autoConversionPrice;
+
+            if (effectiveConvPrice && effectiveConvPrice > 0) {
+                // Determine if we should multiply or divide based on standard pair conventions
+                // AUDUSD, GBPUSD, NZDUSD, EURUSD are usually multipliers
+                // USDCAD, USDCHF, USDJPY are usually divisors
+                const multiplyPairs = ['AUD', 'NZD', 'GBP', 'EUR'];
+                const isMultiply = multiplyPairs.includes(quoteCurrency);
+                
+                if (isMultiply) {
+                    conversionRate = effectiveConvPrice;
+                } else {
+                    conversionRate = 1.0 / effectiveConvPrice;
+                }
+            } else {
+                // Fallback heuristic if autoConversionPrice is not yet available
+                if (isJPY) {
+                    conversionRate = 1.0 / 150.0; 
+                } else if (quoteCurrency === 'AUD') {
+                    conversionRate = 0.70; // Rough estimate for AUDUSD
+                } else if (quoteCurrency === 'CAD') {
+                    conversionRate = 1.0 / 1.35; // Rough estimate for USDCAD
+                } else {
+                    conversionRate = 1.0;
+                }
+            }
         }
 
         const pipValueAccount = pipSize * conversionRate;
 
         // Step 4: Calculate Position Size (Units)
         let units = 0;
-        if (pipValueAccount > 0) {
+        if (pipValueAccount > 0 && config.stopLossPips > 0) {
+            // Position Size = Risk / (SL * PipValue)
             units = riskAmount / (config.stopLossPips * pipValueAccount);
         }
 
         // Step 5: Calculate Standard Lots
         const rawLots = units / contractSize;
-        // Apply rounding to nearest 2 decimal places (standard practice for some calculators, though floor is safer for strict risk)
-        // User requested match with scenarios that imply rounding (e.g. 0.266 -> 0.27)
         const finalLots = Math.round(rawLots * 100) / 100;
 
         return {

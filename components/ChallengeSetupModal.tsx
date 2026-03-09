@@ -367,7 +367,7 @@ export const ChallengeSetupModal: React.FC<Props> = ({ profiles, onStart, onCrea
                                         type="text" 
                                         value={couponCode}
                                         onChange={(e) => setCouponCode(e.target.value)}
-                                        className="bg-black/40 border border-white/10 rounded-xl px-4 py-2 text-sm text-white focus:border-blue-500/50 outline-none transition-colors w-48 text-center font-bold"
+                                        className="bg-[#09090b] border border-white/10 rounded-xl px-4 py-2 text-sm text-white focus:border-blue-500/50 outline-none transition-colors w-48 text-center font-bold"
                                         placeholder="กรอกรหัสคูปอง"
                                     />
                                     <button 
@@ -455,7 +455,7 @@ export const ChallengeSetupModal: React.FC<Props> = ({ profiles, onStart, onCrea
                         const mainSymbol = profile.selectedSymbols && profile.selectedSymbols.length > 0 ? profile.selectedSymbols[0] : '???';
 
                         return (
-                            <div key={profile.id} className="group relative bg-black/20 hover:bg-black/40 border border-white/5 hover:border-blue-500/30 rounded-2xl transition-all shadow-lg hover:shadow-blue-900/10 hover:-translate-y-1 overflow-hidden">
+                            <div key={profile.id} className="group relative bg-[#09090b] hover:bg-black/40 border border-white/5 hover:border-blue-500/30 rounded-2xl transition-all shadow-lg hover:shadow-blue-900/10 hover:-translate-y-1 overflow-hidden">
                                 {/* Clickable Main Area */}
                                 <div className="p-5 cursor-pointer" onClick={() => onStart(profile)}>
                                     <div className="flex justify-between items-start mb-4">
@@ -485,7 +485,7 @@ export const ChallengeSetupModal: React.FC<Props> = ({ profiles, onStart, onCrea
                                 </div>
 
                                 {/* Footer Action Area - Separated */}
-                                <div className="flex justify-between items-center px-5 py-2 border-t border-white/5 bg-black/20 relative z-10">
+                                <div className="flex justify-between items-center px-5 py-2 border-t border-white/5 bg-[#09090b] relative z-10">
                                      <div className="flex items-center space-x-2 cursor-pointer flex-1 py-1" onClick={() => onStart(profile)}>
                                          <span className="w-2 h-2 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.6)]"></span>
                                          <span className="text-xs font-bold text-zinc-400">{mainSymbol}</span>
@@ -615,7 +615,7 @@ export const ChallengeSetupModal: React.FC<Props> = ({ profiles, onStart, onCrea
         
         {/* Footer */}
         {view === 'CREATE' && (
-            <div className="p-6 border-t border-white/5 flex justify-end space-x-4 bg-black/20">
+            <div className="p-6 border-t border-white/5 flex justify-end space-x-4 bg-[#09090b]">
                 <button 
                     onClick={handleCreate}
                     disabled={isSyncingDates || !isCouponVerified}

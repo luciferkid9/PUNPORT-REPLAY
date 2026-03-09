@@ -2,6 +2,7 @@
 import { Candle, SymbolType, TimeframeType } from '../types';
 import { resampleCandles } from './logicEngine';
 import { TF_SECONDS, SYMBOL_CONFIG } from '../constants';
+import { localDB } from './db';
 
 // --- SUPABASE CONFIGURATION ---
 const SUPABASE_URL = 'https://ruhtusfckrsqflgymawe.supabase.co';
@@ -22,65 +23,61 @@ const toIsoString = (timestamp: number): string => {
  * FIXED: Added deduplication and robust date parsing
  */
 const sanitizeCandles = (data: any[], symbol?: string): Candle[] => {
-    if (!Array.isArray(data)) {
-        console.warn("[API Warning] Received non-array data:", data);
+    if (!Array.isArray(data) || data.length === 0) {
+        if (data && !Array.isArray(data)) console.warn("[API Warning] Received non-array data:", data);
         return [];
     }
 
-    const validCandles = data
-        .map((item): Candle | null => {
-            let timeVal = item.time;
-            // Handle various time formats
-            if (typeof timeVal === 'string') {
-                // Fix: Replace space with T to ensure ISO compliance for Safari/Firefox
-                const safeTimeStr = timeVal.replace(' ', 'T');
-                const parsed = new Date(safeTimeStr).getTime();
-                if (!isNaN(parsed)) {
-                    timeVal = Math.floor(parsed / 1000);
-                } else {
-                    return null; // Invalid date
-                }
-            } else {
-                timeVal = Number(timeVal);
-            }
-
-            let open = parseFloat(item.open);
-            let high = parseFloat(item.high);
-            let low = parseFloat(item.low);
-            let close = parseFloat(item.close);
-
-            // AUTO-FIX: If XAUUSD or XAGUSD prices are scaled incorrectly (e.g. 26.50 instead of 2650.00)
-            if (symbol === 'XAUUSD' && close < 500) {
-                open *= 100; high *= 100; low *= 100; close *= 100;
-            }
-            if (symbol === 'XAGUSD' && close < 5) {
-                open *= 10; high *= 10; low *= 10; close *= 10;
-            }
-
-            return {
-                time: timeVal,
-                open,
-                high,
-                low,
-                close,
-                volume: item.volume ? parseFloat(item.volume) : 0
-            };
-        })
-        .filter((c): c is Candle => c !== null && !isNaN(c.time) && !isNaN(c.close) && c.close > 0)
-        .sort((a, b) => a.time - b.time);
-
-    // Deduplicate based on time
     const uniqueCandles: Candle[] = [];
     const timeSet = new Set<number>();
     
-    for (const c of validCandles) {
-        if (!timeSet.has(c.time)) {
-            timeSet.add(c.time);
-            uniqueCandles.push(c);
+    // Single pass for mapping, sanitizing and deduplicating
+    for (let i = 0; i < data.length; i++) {
+        const item = data[i];
+        let timeVal = item.time;
+        
+        if (typeof timeVal === 'string') {
+            const safeTimeStr = timeVal.replace(' ', 'T');
+            const parsed = new Date(safeTimeStr).getTime();
+            if (!isNaN(parsed)) {
+                timeVal = Math.floor(parsed / 1000);
+            } else {
+                continue;
+            }
+        } else {
+            timeVal = Number(timeVal);
         }
+
+        if (isNaN(timeVal) || timeSet.has(timeVal)) continue;
+
+        let open = parseFloat(item.open);
+        let high = parseFloat(item.high);
+        let low = parseFloat(item.low);
+        let close = parseFloat(item.close);
+
+        if (isNaN(close) || close <= 0) continue;
+
+        // AUTO-FIX: If XAUUSD or XAGUSD prices are scaled incorrectly
+        if (symbol === 'XAUUSD' && close < 500) {
+            open *= 100; high *= 100; low *= 100; close *= 100;
+        } else if (symbol === 'XAGUSD' && close < 5) {
+            open *= 10; high *= 10; low *= 10; close *= 10;
+        }
+
+        timeSet.add(timeVal);
+        uniqueCandles.push({
+            time: timeVal,
+            open,
+            high,
+            low,
+            close,
+            volume: item.volume ? parseFloat(item.volume) : 0
+        });
     }
 
-    return uniqueCandles;
+    // Sort is still needed as Supabase might return slightly out of order if multiple chunks are merged
+    // but usually it's already mostly sorted from the DB.
+    return uniqueCandles.sort((a, b) => a.time - b.time);
 };
 
 // --- CUSTOM DATA HELPERS ---
@@ -97,27 +94,51 @@ const fetchRawCandles = async (
     signal?: AbortSignal
 ): Promise<Candle[]> => {
     try {
-        const url = new URL(`${SUPABASE_URL}/rest/v1/${TABLE_NAME}`);
-        url.searchParams.set('symbol', `eq.${symbol}`);
-        url.searchParams.set('tf', `eq.${timeframe}`);
-        url.searchParams.set('time', `${operator}.${toIsoString(timestamp)}`);
-        url.searchParams.set('order', `time.${order}`);
-        url.searchParams.set('limit', limit.toString());
+        const CHUNK_SIZE = 1000;
+        const numChunks = Math.ceil(limit / CHUNK_SIZE);
+        const fetchPromises = [];
 
-        const response = await fetch(url.toString(), {
-            method: 'GET',
-            headers: {
-                'apikey': SUPABASE_KEY,
-                'Authorization': `Bearer ${SUPABASE_KEY}`,
-                'Content-Type': 'application/json'
-            },
-            cache: 'no-store',
-            signal
-        });
+        for (let i = 0; i < numChunks; i++) {
+            const offset = i * CHUNK_SIZE;
+            const currentLimit = Math.min(CHUNK_SIZE, limit - offset);
+            
+            const url = new URL(`${SUPABASE_URL}/rest/v1/${TABLE_NAME}`);
+            url.searchParams.set('symbol', `eq.${symbol}`);
+            url.searchParams.set('tf', `eq.${timeframe}`);
+            url.searchParams.set('time', `${operator}.${toIsoString(timestamp)}`);
+            url.searchParams.set('order', `time.${order}`);
+            url.searchParams.set('limit', currentLimit.toString());
+            url.searchParams.set('offset', offset.toString());
 
-        if (!response.ok) return [];
-        const rawData = await response.json();
-        return sanitizeCandles(rawData, symbol);
+            fetchPromises.push(
+                fetch(url.toString(), {
+                    method: 'GET',
+                    headers: {
+                        'apikey': SUPABASE_KEY,
+                        'Authorization': `Bearer ${SUPABASE_KEY}`,
+                        'Content-Type': 'application/json'
+                    },
+                    cache: 'no-store',
+                    signal
+                }).then(async (res) => {
+                    if (!res.ok) return [];
+                    const rawData = await res.json();
+                    return sanitizeCandles(rawData, symbol);
+                }).catch(err => {
+                    if (err.name !== 'AbortError') console.error('Chunk fetch failed:', err);
+                    return [];
+                })
+            );
+        }
+
+        const results = await Promise.all(fetchPromises);
+        let allCandles: Candle[] = [];
+        for (const chunk of results) {
+            allCandles = allCandles.concat(chunk);
+        }
+        
+        // Final sort and deduplicate just in case
+        return allCandles.sort((a, b) => a.time - b.time);
     } catch (error: any) {
         if (error.name !== 'AbortError') console.error('Fetch raw failed:', error);
         return [];
@@ -143,23 +164,78 @@ export const fetchContextCandles = async (
         return resampled.slice(-limit);
     }
 
-    // 2. Try Fetching Requested Timeframe directly
-    let candles = await fetchRawCandles(symbol, timeframe, 'lt', endTime, limit, 'desc', signal);
-
-    // 3. Fallback: If no data found and TF is NOT M2, try fetching M2 and resampling
-    if (candles.length === 0 && timeframe !== 'M2') {
-        const ratio = (TF_SECONDS[timeframe] || 3600) / TF_SECONDS['M2'];
-        const fallbackLimit = Math.min(Math.floor(limit * ratio), 50000); 
-
-        const baseCandles = await fetchRawCandles(symbol, 'M2', 'lt', endTime, fallbackLimit, 'desc', signal);
+    // 0. Try Local DB (Cache First)
+    try {
+        const localData = await localDB.getCandlesBefore(symbol, timeframe, endTime, limit);
+        const tfSecs = TF_SECONDS[timeframe] || 60;
         
-        if (baseCandles.length > 0) {
-            const resampled = resampleCandles(baseCandles, timeframe);
-            candles = resampled.slice(-limit);
-        }
-    }
+        // Check if local data is "fresh" (reaches close to the requested endTime)
+        // We allow a small gap (e.g., 1.5 periods) to account for missing data or alignment issues
+        const isFresh = localData.length > 0 && (endTime - localData[localData.length - 1].time) <= tfSecs * 1.5;
 
-    return candles;
+        if (isFresh && localData.length >= limit) {
+            return localData;
+        }
+
+        if (!isFresh) {
+            // Gap at the end or no data: Fetch fresh data from API ending at endTime
+            let candles = await fetchRawCandles(symbol, timeframe, 'lt', endTime, limit, 'desc', signal);
+
+            // Fallback: If no data found and TF is NOT M2, try fetching M2 and resampling
+            if (candles.length === 0 && timeframe !== 'M2') {
+                const ratio = (TF_SECONDS[timeframe] || 3600) / TF_SECONDS['M2'];
+                const fallbackLimit = Math.min(Math.max(Math.floor(limit * ratio), 5000), 50000); 
+                const baseCandles = await fetchRawCandles(symbol, 'M2', 'lt', endTime, fallbackLimit, 'desc', signal);
+                if (baseCandles.length > 0) {
+                    await localDB.saveCandles(symbol, 'M2', baseCandles);
+                    const resampled = resampleCandles(baseCandles, timeframe);
+                    candles = resampled.slice(-limit);
+                }
+            }
+
+            if (candles.length > 0) {
+                await localDB.saveCandles(symbol, timeframe, candles);
+            }
+            return candles;
+        } else {
+            // Data is fresh but we need more history before the oldest local candle
+            const needed = limit - localData.length;
+            const fetchEndTime = localData[0].time;
+
+            let candles = await fetchRawCandles(symbol, timeframe, 'lt', fetchEndTime, needed, 'desc', signal);
+
+            if (candles.length === 0 && timeframe !== 'M2') {
+                const ratio = (TF_SECONDS[timeframe] || 3600) / TF_SECONDS['M2'];
+                const fallbackLimit = Math.min(Math.max(Math.floor(needed * ratio), 5000), 50000); 
+                const baseCandles = await fetchRawCandles(symbol, 'M2', 'lt', fetchEndTime, fallbackLimit, 'desc', signal);
+                if (baseCandles.length > 0) {
+                    await localDB.saveCandles(symbol, 'M2', baseCandles);
+                    const resampled = resampleCandles(baseCandles, timeframe);
+                    candles = resampled.slice(-needed);
+                }
+            }
+
+            if (candles.length > 0) {
+                await localDB.saveCandles(symbol, timeframe, candles);
+            }
+            return [...candles, ...localData];
+        }
+
+    } catch (error) {
+        console.error("Local DB Error in fetchContextCandles:", error);
+        // Fallback to full API fetch if DB fails
+        let candles = await fetchRawCandles(symbol, timeframe, 'lt', endTime, limit, 'desc', signal);
+        if (candles.length === 0 && timeframe !== 'M2') {
+            const ratio = (TF_SECONDS[timeframe] || 3600) / TF_SECONDS['M2'];
+            const fallbackLimit = Math.min(Math.floor(limit * ratio), 50000); 
+            const baseCandles = await fetchRawCandles(symbol, 'M2', 'lt', endTime, fallbackLimit, 'desc', signal);
+            if (baseCandles.length > 0) {
+                const resampled = resampleCandles(baseCandles, timeframe);
+                candles = resampled.slice(-limit);
+            }
+        }
+        return candles;
+    }
 };
 
 /**
@@ -179,23 +255,71 @@ export const fetchFutureCandles = async (
         return resampled.filter(c => c.time > startTime).slice(0, limit);
     }
 
-    // 1. Try Target TF
-    let candles = await fetchRawCandles(symbol, timeframe, 'gt', startTime, limit, 'asc', signal);
-
-    // 2. Fallback to M2 (Added for Robustness across all TFs)
-    if (candles.length === 0 && timeframe !== 'M2') {
-        const ratio = (TF_SECONDS[timeframe] || 3600) / TF_SECONDS['M2'];
-        const fallbackLimit = Math.min(Math.floor(limit * ratio), 50000);
-
-        const baseCandles = await fetchRawCandles(symbol, 'M2', 'gt', startTime, fallbackLimit, 'asc', signal);
+    try {
+        const localData = await localDB.getCandlesAfter(symbol, timeframe, startTime, limit);
         
-        if (baseCandles.length > 0) {
-            const resampled = resampleCandles(baseCandles, timeframe);
-            candles = resampled.filter(c => c.time > startTime).slice(0, limit);
-        }
-    }
+        // Check if local data is "fresh" enough (no gap at the start)
+        const tfSecs = TF_SECONDS[timeframe] || 60;
+        const isFresh = localData.length > 0 && (localData[0].time - startTime) <= (tfSecs * 1.5);
 
-    return candles;
+        if (localData.length >= limit && isFresh) {
+            return localData;
+        }
+
+        const needed = limit;
+        const fetchStartTime = startTime;
+
+        // 1. Try Target TF
+        let candles = await fetchRawCandles(symbol, timeframe, 'gt', fetchStartTime, needed, 'asc', signal);
+
+        // 2. Fallback to M2 (Added for Robustness across all TFs)
+        if (candles.length === 0 && timeframe !== 'M2') {
+            const ratio = (TF_SECONDS[timeframe] || 3600) / TF_SECONDS['M2'];
+            const fallbackLimit = Math.min(Math.max(Math.floor(needed * ratio), 5000), 50000);
+
+            const baseCandles = await fetchRawCandles(symbol, 'M2', 'gt', fetchStartTime, fallbackLimit, 'asc', signal);
+            
+            if (baseCandles.length > 0) {
+                await localDB.saveCandles(symbol, 'M2', baseCandles);
+                const resampled = resampleCandles(baseCandles, timeframe);
+                candles = resampled.filter(c => c.time > fetchStartTime).slice(0, needed);
+            }
+        }
+
+        if (candles.length > 0) {
+            await localDB.saveCandles(symbol, timeframe, candles);
+        }
+
+        // Merge and deduplicate
+        if (localData.length > 0) {
+            const mergedMap = new Map<number, Candle>();
+            localData.forEach(c => mergedMap.set(c.time, c));
+            candles.forEach(c => mergedMap.set(c.time, c));
+            
+            const merged = Array.from(mergedMap.values())
+                .filter(c => c.time > startTime)
+                .sort((a, b) => a.time - b.time);
+            
+            return merged.slice(0, limit);
+        }
+
+        return candles;
+
+    } catch (error) {
+        console.error("Local DB Error in fetchFutureCandles:", error);
+        // Fallback to full API fetch
+        let candles = await fetchRawCandles(symbol, timeframe, 'gt', startTime, limit, 'asc', signal);
+        if (candles.length === 0 && timeframe !== 'M2') {
+            const ratio = (TF_SECONDS[timeframe] || 3600) / TF_SECONDS['M2'];
+            const fallbackLimit = Math.min(Math.floor(limit * ratio), 50000);
+            const baseCandles = await fetchRawCandles(symbol, 'M2', 'gt', startTime, fallbackLimit, 'asc', signal);
+            if (baseCandles.length > 0) {
+                const resampled = resampleCandles(baseCandles, timeframe);
+                candles = resampled.filter(c => c.time > startTime).slice(0, limit);
+            }
+        }
+        return candles;
+    }
 };
 
 /**
@@ -215,23 +339,67 @@ export const fetchHistoricalData = async (
         return resampled.slice(-limit);
     }
 
-    // 1. Try Target TF
-    let candles = await fetchRawCandles(symbol, timeframe, 'lt', beforeTimestamp, limit, 'desc', signal);
-
-    // 2. Fallback to M2
-    if (candles.length === 0 && timeframe !== 'M2') {
-        const ratio = (TF_SECONDS[timeframe] || 3600) / TF_SECONDS['M2'];
-        const fallbackLimit = Math.min(Math.floor(limit * ratio), 50000);
-
-        const baseCandles = await fetchRawCandles(symbol, 'M2', 'lt', beforeTimestamp, fallbackLimit, 'desc', signal);
+    try {
+        const localData = await localDB.getCandlesBefore(symbol, timeframe, beforeTimestamp, limit);
+        const tfSecs = TF_SECONDS[timeframe] || 60;
         
-        if (baseCandles.length > 0) {
-            const resampled = resampleCandles(baseCandles, timeframe);
-            candles = resampled.slice(-limit);
-        }
-    }
+        // Check if local data is "fresh" (reaches close to the requested beforeTimestamp)
+        const isFresh = localData.length > 0 && (beforeTimestamp - localData[localData.length - 1].time) <= tfSecs * 1.5;
 
-    return candles;
+        if (isFresh && localData.length >= limit) {
+            return localData;
+        }
+
+        if (!isFresh) {
+            let candles = await fetchRawCandles(symbol, timeframe, 'lt', beforeTimestamp, limit, 'desc', signal);
+            if (candles.length === 0 && timeframe !== 'M2') {
+                const ratio = (TF_SECONDS[timeframe] || 3600) / TF_SECONDS['M2'];
+                const fallbackLimit = Math.min(Math.max(Math.floor(limit * ratio), 5000), 50000); 
+                const baseCandles = await fetchRawCandles(symbol, 'M2', 'lt', beforeTimestamp, fallbackLimit, 'desc', signal);
+                if (baseCandles.length > 0) {
+                    await localDB.saveCandles(symbol, 'M2', baseCandles);
+                    const resampled = resampleCandles(baseCandles, timeframe);
+                    candles = resampled.slice(-limit);
+                }
+            }
+            if (candles.length > 0) {
+                await localDB.saveCandles(symbol, timeframe, candles);
+            }
+            return candles;
+        } else {
+            const needed = limit - localData.length;
+            const fetchEndTime = localData[0].time;
+            let candles = await fetchRawCandles(symbol, timeframe, 'lt', fetchEndTime, needed, 'desc', signal);
+            if (candles.length === 0 && timeframe !== 'M2') {
+                const ratio = (TF_SECONDS[timeframe] || 3600) / TF_SECONDS['M2'];
+                const fallbackLimit = Math.min(Math.floor(needed * ratio), 50000); 
+                const baseCandles = await fetchRawCandles(symbol, 'M2', 'lt', fetchEndTime, fallbackLimit, 'desc', signal);
+                if (baseCandles.length > 0) {
+                    await localDB.saveCandles(symbol, 'M2', baseCandles);
+                    const resampled = resampleCandles(baseCandles, timeframe);
+                    candles = resampled.slice(-needed);
+                }
+            }
+            if (candles.length > 0) {
+                await localDB.saveCandles(symbol, timeframe, candles);
+            }
+            return [...candles, ...localData];
+        }
+    } catch (error) {
+        console.error("Local DB Error in fetchHistoricalData:", error);
+        // Fallback to full API fetch
+        let candles = await fetchRawCandles(symbol, timeframe, 'lt', beforeTimestamp, limit, 'desc', signal);
+        if (candles.length === 0 && timeframe !== 'M2') {
+            const ratio = (TF_SECONDS[timeframe] || 3600) / TF_SECONDS['M2'];
+            const fallbackLimit = Math.min(Math.floor(limit * ratio), 50000);
+            const baseCandles = await fetchRawCandles(symbol, 'M2', 'lt', beforeTimestamp, fallbackLimit, 'desc', signal);
+            if (baseCandles.length > 0) {
+                const resampled = resampleCandles(baseCandles, timeframe);
+                candles = resampled.slice(-limit);
+            }
+        }
+        return candles;
+    }
 };
 
 /**
@@ -324,6 +492,33 @@ export const fetchLastCandle = async (
         return null;
 
     } catch (error: any) {
+        return null;
+    }
+};
+
+/**
+ * Fetch the price of a symbol at a specific time.
+ */
+export const fetchPriceAtTime = async (symbol: SymbolType, time: number): Promise<number | null> => {
+    if (symbol === 'CUSTOM') {
+        const allData = getCustomData();
+        const closest = allData.filter(c => c.time <= time).pop();
+        return closest ? closest.close : null;
+    }
+
+    try {
+        const localCandles = await localDB.getCandlesBefore(symbol, 'M2', time + 1, 1);
+        if (localCandles.length > 0) {
+            return localCandles[0].close;
+        }
+
+        const candles = await fetchRawCandles(symbol, 'M2', 'lt', time + 1, 1, 'desc');
+        if (candles.length > 0) {
+            await localDB.saveCandles(symbol, 'M2', candles);
+            return candles[0].close;
+        }
+        return null;
+    } catch (error) {
         return null;
     }
 };

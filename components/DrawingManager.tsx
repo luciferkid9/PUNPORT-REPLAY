@@ -71,6 +71,16 @@ export const DrawingManager: React.FC<Props> = ({
                     <option value="dotted">Dotted</option>
                 </select>
             </div>
+
+            <div className="flex items-center justify-between pt-2 border-t border-white/5">
+                <span className="text-xs text-zinc-400">Show Border</span>
+                <button 
+                    onClick={() => onUpdateSettings({...settings, showBorder: !settings.showBorder})}
+                    className={`w-10 h-5 rounded-full transition-all relative ${settings.showBorder ? 'bg-blue-600' : 'bg-zinc-700'}`}
+                >
+                    <div className={`absolute top-1 w-3 h-3 rounded-full bg-white transition-all ${settings.showBorder ? 'left-6' : 'left-1'}`} />
+                </button>
+            </div>
         </div>
 
         {/* Object Tree */}

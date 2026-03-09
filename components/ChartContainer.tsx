@@ -1,7 +1,8 @@
 
 import React, { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react';
 import { createChart, ColorType, IChartApi, ISeriesApi, MouseEventParams, LogicalRange, IPriceLine, TickMarkType } from 'lightweight-charts';
-import { Candle, Trade, OrderStatus, ToolType, DrawingObject, Point, IndicatorConfig, DrawingSettings, SymbolType, SessionConfig, IndicatorType, DragTradeUpdate, LotSizeConfig } from '../types';
+import { Candle, Trade, OrderStatus, ToolType, DrawingObject, Point, IndicatorConfig, DrawingSettings, SymbolType, SessionConfig, IndicatorType, DragTradeUpdate, LotSizeConfig, TimeframeType } from '../types';
+import { TF_SECONDS } from '../constants';
 import { LotSizeWidget } from './LotSizeWidget';
 
 interface Props {
@@ -33,10 +34,12 @@ interface Props {
   lotSizeConfig?: LotSizeConfig;
   onLotSizeWidgetDoubleClick?: () => void;
   currentPrice?: number;
+  autoConversionPrice?: number | null;
 }
 
 export interface ChartRef {
     fitContent: () => void;
+    getChart: () => IChartApi | null;
 }
 
 interface DragState {
@@ -73,7 +76,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
     emaDataMap, rsiData, macdData, 
     onDrawingCreate, onDrawingUpdate, onDrawingEdit, onDrawingSelect, onDrawingDelete, onModifyTrade, onModifyOrderEntry, onTradeDrag, onLoadMore, onIndicatorDblClick, onRemoveIndicator, drawings, selectedDrawingId,
     pricePrecision = 5,
-    lotSizeConfig, onLotSizeWidgetDoubleClick, currentPrice
+    lotSizeConfig, onLotSizeWidgetDoubleClick, currentPrice, autoConversionPrice
 }, ref) => {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -87,6 +90,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
   const [indicatorValues, setIndicatorValues] = useState<Record<string, any>>({});
 
   const isSyncingRef = useRef<boolean>(false);
+  const isLoadingHistoryRef = useRef<boolean>(false);
 
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -164,7 +168,8 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
   useImperativeHandle(ref, () => ({
     fitContent: () => {
         chartRef.current?.timeScale().fitContent();
-    }
+    },
+    getChart: () => chartRef.current
   }));
 
   // Helper to get Chart and Series for a given Pane
@@ -181,26 +186,46 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
       return { chart: indChart || null, series: indSeries || null };
   };
 
-  const getMagnetPrice = (time: number, rawPrice: number, pane: string): number => {
-      if (!magnetModeRef.current) return rawPrice;
-      
-      // Magnet only logic for Main Pane currently for simplicity
-      // For Indicators, we could snap to values, but simpler to skip for now
-      if (pane !== 'MAIN') return rawPrice;
+  const getMagnetPoint = (time: number, rawPrice: number, pane: string): { time: number, price: number } => {
+      if (!magnetModeRef.current || pane !== 'MAIN') return { time, price: rawPrice };
 
       const currentData = dataRef.current;
-      const candle = currentData.find(c => c.time === time);
-      if (!candle) return rawPrice;
+      if (!currentData.length) return { time, price: rawPrice };
+
+      // ค้นหาแท่งเทียนที่ใกล้ที่สุด (Nearest Candle)
+      let low = 0, high = currentData.length - 1;
+      let nearestIdx = 0;
+      while (low <= high) {
+          const mid = (low + high) >>> 1;
+          if (currentData[mid].time === time) { nearestIdx = mid; break; }
+          if (currentData[mid].time < time) { nearestIdx = mid; low = mid + 1; }
+          else { high = mid - 1; }
+      }
+      
+      const candle = currentData[nearestIdx];
+      if (!candle) return { time, price: rawPrice };
+
+      const candleInterval = intervalRef.current || 60;
+      const timeDiff = Math.abs(time - candle.time);
+      
+      // ถ้าเวลาอยู่ห่างจากแท่งเทียนเกิน 1 ช่วงแท่งเทียน ไม่ต้อง Snap (ป้องกันการกระโดดไปหาแท่งแรกสุด)
+      if (timeDiff > candleInterval) {
+          return { time, price: rawPrice };
+      }
+
       const distHigh = Math.abs(candle.high - rawPrice);
       const distLow = Math.abs(candle.low - rawPrice);
       const distClose = Math.abs(candle.close - rawPrice);
       const distOpen = Math.abs(candle.open - rawPrice);
       
       const minDist = Math.min(distHigh, distLow, distClose, distOpen);
-      if (minDist === distHigh) return candle.high;
-      if (minDist === distLow) return candle.low;
-      if (minDist === distClose) return candle.close;
-      return candle.open;
+      let snappedPrice = rawPrice;
+      if (minDist === distHigh) snappedPrice = candle.high;
+      else if (minDist === distLow) snappedPrice = candle.low;
+      else if (minDist === distClose) snappedPrice = candle.close;
+      else snappedPrice = candle.open;
+
+      return { time: candle.time, price: snappedPrice };
   };
 
   const getTimeFromLogical = (logical: number, chart: IChartApi): number | null => {
@@ -285,9 +310,12 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
       const rawPrice = series.coordinateToPrice(y);
       
       if (logical !== null && rawPrice !== null) {
-          let time = getTimeFromLogical(logical, chart);
+          const time = getTimeFromLogical(logical, chart);
           if (time) {
-              let finalPrice = getMagnetPrice(time, rawPrice, pane);
+              const useMagnet = magnetModeRef.current && activeToolRef.current !== 'RECTANGLE';
+              const snapped = useMagnet ? getMagnetPoint(time, rawPrice, pane) : { time, price: rawPrice };
+              let finalTime = snapped.time;
+              let finalPrice = snapped.price;
 
               // --- SHIFT KEY SNAP LOGIC (Trendline Creation) ---
               if (e.shiftKey && tempPoint && tempPoint.pane === pane && activeToolRef.current === 'TRENDLINE') {
@@ -303,12 +331,12 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                       const dx = Math.abs(x - p1X);
                       const dy = Math.abs(y - p1Y);
                       if (dx > dy) finalPrice = p1Price; // Horizontal Snap
-                      else time = p1Time; // Vertical Snap
+                      else finalTime = p1Time; // Vertical Snap
                   }
               }
               // -----------------------------
 
-              setHoverPoint({ point: { time, price: finalPrice }, pane });
+              setHoverPoint({ point: { time: finalTime, price: finalPrice }, pane });
           }
       }
 
@@ -323,7 +351,9 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                       onTradeDrag({ id: dragTrade.id, type: dragTrade.type, price: price });
                   }
               }
-          } catch(e) {}
+          } catch(e) {
+              // Ignore coordinateToPrice errors
+          }
       }
 
       // Drawing Dragging Logic
@@ -331,8 +361,10 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
           if (logical !== null && rawPrice !== null) {
               const time = getTimeFromLogical(logical, chart);
               if (time) {
-                  const useMagnet = dragTarget.point !== 'all' && dragTarget.point !== 'target' && dragTarget.point !== 'stop' && dragTarget.point !== 'entry';
-                  const finalPrice = useMagnet ? getMagnetPrice(time, rawPrice, pane) : rawPrice;
+                  const useMagnet = magnetModeRef.current && !isShiftPressed.current && dragTarget.point !== 'all' && dragTarget.point !== 'target' && dragTarget.point !== 'stop' && dragTarget.point !== 'entry';
+                  const snapped = useMagnet ? getMagnetPoint(time, rawPrice, pane) : { time, price: rawPrice };
+                  const finalTime = snapped.time;
+                  const finalPrice = snapped.price;
                   
                   const sym = activeSymbolRef.current || '';
                   const isJpy = sym.includes('JPY');
@@ -445,8 +477,10 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                   
                   } else if (dragTarget.point === 'p1') {
                       newObj.p1 = { time: snapTime, price: roundPrice(snapPrice) };
+                      if (useMagnet) newObj.p1.time = finalTime;
                   } else if (dragTarget.point === 'p2') {
                       newObj.p2 = { time: snapTime, price: roundPrice(snapPrice) };
+                      if (useMagnet) newObj.p2.time = finalTime;
                   } else if (dragTarget.point === 'target') {
                       newObj.targetPrice = roundPrice(rawPrice); 
                   } else if (dragTarget.point === 'stop') {
@@ -548,8 +582,10 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
 
             const rawPrice = series.coordinateToPrice(param.point.y);
             if (rawPrice === null) return;
-            const finalPrice = getMagnetPrice(time, rawPrice, pane);
-            const clickedPoint: Point = { time: time, price: finalPrice };
+            // Disable magnet snapping when dragging to prevent "flipping" or "jumping" issues
+            // Also disable for RECTANGLE tool to allow free placement as requested
+            const snapped = (activeDragObject || activeToolRef.current === 'RECTANGLE') ? { time, price: rawPrice } : getMagnetPoint(time, rawPrice, pane);
+            const clickedPoint: Point = { time: snapped.time, price: snapped.price };
 
             if (activeToolRef.current === 'TEXT') {
                 if (onDrawingCreateRef.current) {
@@ -632,6 +668,11 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                         type: activeToolRef.current,
                         p1: prev.point, p2: p2, visible: true, locked: false,
                         color: drawingSettingsRef.current.color, lineWidth: drawingSettingsRef.current.lineWidth, lineStyle: drawingSettingsRef.current.lineStyle,
+                        fillOpacity: drawingSettingsRef.current.fillOpacity,
+                        rectTextVAlign: drawingSettingsRef.current.rectTextVAlign || 'top',
+                        rectTextHAlign: drawingSettingsRef.current.rectTextHAlign || 'left',
+                        rectTextPlacement: drawingSettingsRef.current.rectTextPlacement || 'inside',
+                        showBorder: drawingSettingsRef.current.showBorder,
                         targetPrice, stopPrice,
                         pane: pane 
                     });
@@ -932,19 +973,35 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
   const updateDrawings = () => {
       const panePaths: Record<string, React.ReactNode[]> = { MAIN: [], RSI: [], MACD: [] };
       const width = chartContainerRef.current?.clientWidth || 0;
+      const height = chartContainerRef.current?.clientHeight || 0;
 
       if (chartRef.current && candleSeriesRef.current && chartContainerRef.current) {
           const mainPaths = panePaths.MAIN;
           const safePriceCoord = (price: number) => { 
+              if (price === null || isNaN(price)) return -10000;
               try { 
                   const coord = candleSeriesRef.current!.priceToCoordinate(price); 
-                  return coord === null ? -10000 : coord; 
+                  if (coord !== null) return coord;
+                  
+                  // Fallback: Estimate coordinate if off-screen
+                  const firstCandle = dataRef.current[0];
+                  if (!firstCandle) return -10000;
+                  const c0 = candleSeriesRef.current!.priceToCoordinate(firstCandle.close);
+                  if (c0 === null) return -10000;
+                  
+                  const c1 = candleSeriesRef.current!.priceToCoordinate(firstCandle.close * 1.001);
+                  if (c1 === null) return price > firstCandle.close ? -50000 : height + 50000;
+                  
+                  const pDiff = firstCandle.close * 0.001;
+                  const cDiff = c1 - c0;
+                  return c0 + (price - firstCandle.close) * (cDiff / pDiff);
               } catch(e) { 
                   return -10000; 
               }
           };
 
           // ... (Trade lines rendering logic preserved) ...
+          const tradePointerEvents = activeToolRef.current === 'CURSOR' ? 'auto' : 'none';
           trades.forEach(t => {
               if (t.status === OrderStatus.CLOSED) return;
               const isDraggingThis = dragTrade && dragTrade.id === t.id;
@@ -957,7 +1014,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                       const color = '#f59e0b';
                       const label = t.type === 'LIMIT' ? 'LIMIT' : 'STOP';
                       mainPaths.push(
-                          <g key={`entry-${t.id}`} className="cursor-ns-resize group" style={{pointerEvents: 'auto'}}>
+                          <g key={`entry-${t.id}`} className="cursor-ns-resize group" style={{pointerEvents: tradePointerEvents}}>
                               <line x1={0} y1={y} x2={width} y2={y} stroke="transparent" strokeWidth={20} style={{pointerEvents: 'stroke', cursor: 'ns-resize'}} onMouseDown={(e) => { e.stopPropagation(); setDragTrade({ id: t.id, type: 'ENTRY', startPrice: t.entryPrice, currentPrice: t.entryPrice }); }} onDoubleClick={(e) => { e.stopPropagation(); const newPrice = window.prompt("Enter new price:", t.entryPrice.toString()); if (newPrice && !isNaN(parseFloat(newPrice)) && onModifyOrderEntry) onModifyOrderEntry(t.id, parseFloat(newPrice)); }} />
                               <line x1={0} y1={y} x2={width} y2={y} stroke={color} strokeDasharray="4 2" strokeWidth={1} style={{pointerEvents: 'none'}} />
                               <text x={10} y={y - 4} fill={color} fontSize="12" fontWeight="bold" style={{pointerEvents: 'none'}}>#{t.id.substr(0,4)}</text>
@@ -971,10 +1028,10 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                    if (entryY > 0 && entryY < chartContainerRef.current!.clientHeight) {
                        mainPaths.push(<text key={`entry-lbl-${t.id}`} x={10} y={entryY - 4} fill="#a1a1aa" fontSize="12" fontWeight="bold" style={{pointerEvents: 'none'}}>#{t.id.substr(0,4)}</text>);
                        if (t.stopLoss === 0 && (!isDraggingThis || dragTrade.type !== 'SL')) {
-                            mainPaths.push(<g key={`sl-add-${t.id}`} className="cursor-pointer select-none" style={{pointerEvents: 'auto'}} transform={`translate(${width - 115}, ${entryY - 10})`} onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); setDragTrade({ id: t.id, type: 'SL', startPrice: t.entryPrice, currentPrice: t.entryPrice }); }}><rect width="28" height="18" rx="4" fill="#18181b" stroke="#F23645" strokeWidth={1} /><text x="14" y="12" textAnchor="middle" fill="#F23645" fontSize="11" fontWeight="bold">SL+</text></g>);
+                            mainPaths.push(<g key={`sl-add-${t.id}`} className="cursor-pointer select-none" style={{pointerEvents: tradePointerEvents}} transform={`translate(${width - 115}, ${entryY - 10})`} onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); setDragTrade({ id: t.id, type: 'SL', startPrice: t.entryPrice, currentPrice: t.entryPrice }); }}><rect width="28" height="18" rx="4" fill="#18181b" stroke="#F23645" strokeWidth={1} /><text x="14" y="12" textAnchor="middle" fill="#F23645" fontSize="11" fontWeight="bold">SL+</text></g>);
                        }
                        if (t.takeProfit === 0 && (!isDraggingThis || dragTrade.type !== 'TP')) {
-                            mainPaths.push(<g key={`tp-add-${t.id}`} className="cursor-pointer select-none" style={{pointerEvents: 'auto'}} transform={`translate(${width - 83}, ${entryY - 10})`} onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); setDragTrade({ id: t.id, type: 'TP', startPrice: t.entryPrice, currentPrice: t.entryPrice }); }}><rect width="28" height="18" rx="4" fill="#18181b" stroke="#089981" strokeWidth={1} /><text x="14" y="12" textAnchor="middle" fill="#089981" fontSize="11" fontWeight="bold">TP+</text></g>);
+                            mainPaths.push(<g key={`tp-add-${t.id}`} className="cursor-pointer select-none" style={{pointerEvents: tradePointerEvents}} transform={`translate(${width - 83}, ${entryY - 10})`} onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); setDragTrade({ id: t.id, type: 'TP', startPrice: t.entryPrice, currentPrice: t.entryPrice }); }}><rect width="28" height="18" rx="4" fill="#18181b" stroke="#089981" strokeWidth={1} /><text x="14" y="12" textAnchor="middle" fill="#089981" fontSize="11" fontWeight="bold">TP+</text></g>);
                        }
                    }
               }
@@ -983,7 +1040,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                   const y = safePriceCoord(price);
                   if (y > 0 && y < chartContainerRef.current!.clientHeight) {
                       mainPaths.push(
-                        <g key={`sl-${t.id}`} className="cursor-ns-resize group" style={{pointerEvents: 'auto'}}>
+                        <g key={`sl-${t.id}`} className="cursor-ns-resize group" style={{pointerEvents: tradePointerEvents}}>
                             <line x1={0} y1={y} x2={width} y2={y} stroke="transparent" strokeWidth={20} style={{pointerEvents: 'stroke', cursor: 'ns-resize'}} onMouseDown={(e) => { e.stopPropagation(); setDragTrade({ id: t.id, type: 'SL', startPrice: t.stopLoss, currentPrice: t.stopLoss }); }} />
                             <line x1={0} y1={y} x2={width} y2={y} stroke="#F23645" strokeDasharray="4 4" strokeWidth={1} style={{pointerEvents: 'none'}} />
                             <text x={10} y={y - 4} fill="#F23645" fontSize="12" fontWeight="bold" style={{pointerEvents: 'none'}}>SL #{t.id.substr(0,4)}</text>
@@ -997,7 +1054,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                   const y = safePriceCoord(price);
                   if (y > 0 && y < chartContainerRef.current!.clientHeight) {
                       mainPaths.push(
-                        <g key={`tp-${t.id}`} className="cursor-ns-resize group" style={{pointerEvents: 'auto'}}>
+                        <g key={`tp-${t.id}`} className="cursor-ns-resize group" style={{pointerEvents: tradePointerEvents}}>
                             <line x1={0} y1={y} x2={width} y2={y} stroke="transparent" strokeWidth={20} style={{pointerEvents: 'stroke', cursor: 'ns-resize'}} onMouseDown={(e) => { e.stopPropagation(); setDragTrade({ id: t.id, type: 'TP', startPrice: t.takeProfit, currentPrice: t.takeProfit }); }} />
                             <line x1={0} y1={y} x2={width} y2={y} stroke="#089981" strokeDasharray="4 4" strokeWidth={1} style={{pointerEvents: 'none'}} />
                             <text x={10} y={y - 4} fill="#089981" fontSize="12" fontWeight="bold" style={{pointerEvents: 'none'}}>TP #{t.id.substr(0,4)}</text>
@@ -1019,14 +1076,15 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
       if (tempPoint && hoverPoint && activeToolRef.current !== 'CURSOR' && activeToolRef.current !== 'KILLZONE' && activeToolRef.current !== 'TEXT') {
           // ... (Ghost rendering preserved) ...
           if (tempPoint.pane === hoverPoint.pane) {
-              const ghostId = 'ghost-preview';
+              const ghostId = `ghost-preview-${tempPoint.pane}`;
               const ghostDrawing: DrawingObject = {
                   id: ghostId, symbol: activeSymbolRef.current, type: activeToolRef.current,
                   p1: tempPoint.point, p2: hoverPoint.point, visible: true, locked: false,
                   color: drawingSettingsRef.current.color, lineWidth: drawingSettingsRef.current.lineWidth, lineStyle: drawingSettingsRef.current.lineStyle,
+                  fillOpacity: drawingSettingsRef.current.fillOpacity,
+                  showBorder: drawingSettingsRef.current.showBorder,
                   pane: tempPoint.pane
               };
-              if (activeToolRef.current === 'RECTANGLE') ghostDrawing.text = 'Kill Zone';
               if (activeToolRef.current === 'LONG_POSITION' || activeToolRef.current === 'SHORT_POSITION') {
                     const isLong = activeToolRef.current === 'LONG_POSITION';
                     const entryP = tempPoint.point.price;
@@ -1050,7 +1108,9 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                     ghostDrawing.targetPrice = targetPrice;
                     ghostDrawing.stopPrice = stopPrice;
               }
-              renderList = [...renderList, ghostDrawing];
+              if (!renderList.find(d => d.id === ghostId)) {
+                  renderList = [...renderList, ghostDrawing];
+              }
           }
       }
 
@@ -1070,60 +1130,55 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
              const ts = timeScale;
              if (!ts) return null;
              
-             // 1. Try direct lookup
-             const c = ts.timeToCoordinate(time as any);
-             if (c !== null && c !== undefined) return c;
-
              const currentData = dataRef.current;
              if (!currentData || currentData.length === 0) return null;
 
-             // 2. Binary search for nearest index
-             let low = 0, high = currentData.length - 1, leftIdx = -1;
+             // 1. Time Alignment: Find the nearest candle time in the current data
+             // This ensures drawings snap to valid time points in the current TF
+             let low = 0, high = currentData.length - 1;
+             let nearestIdx = 0;
+             
+             // Binary search for the nearest candle
              while (low <= high) {
                  const mid = (low + high) >>> 1;
-                 if (currentData[mid].time === time) { leftIdx = mid; break; } 
-                 else if (currentData[mid].time < time) { leftIdx = mid; low = mid + 1; } 
-                 else { high = mid - 1; }
+                 if (currentData[mid].time === time) { nearestIdx = mid; break; }
+                 if (currentData[mid].time < time) {
+                     nearestIdx = mid;
+                     low = mid + 1;
+                 } else {
+                     high = mid - 1;
+                 }
              }
-
-             // If exact match found by index search
-             if (leftIdx !== -1 && currentData[leftIdx].time === time) return ts.logicalToCoordinate(leftIdx);
-
-             const candleInterval = intervalRef.current || 60;
              
-             // 3. Project if outside data range
-             if (leftIdx === -1) {
-                 // Before first candle
-                 const first = currentData[0];
-                 const logicalOffset = (time - first.time) / candleInterval;
-                 return ts.logicalToCoordinate(logicalOffset);
-             }
-             if (leftIdx === currentData.length - 1) {
-                 // After last candle
-                 const last = currentData[leftIdx];
-                 const logicalOffset = (time - last.time) / candleInterval;
-                 return ts.logicalToCoordinate(leftIdx + logicalOffset);
-             }
+             // Snap to the nearest candle time
+             const snappedTime = currentData[nearestIdx].time;
 
-             // 4. Interpolate if between candles
-             const leftCandle = currentData[leftIdx];
-             const rightCandle = currentData[leftIdx + 1];
-             const range = rightCandle.time - leftCandle.time;
-             const diff = time - leftCandle.time;
-             
-             // Use interval for projection if gap is huge, otherwise proportional
-             const ratio = (range > candleInterval * 1.5) 
-                ? diff / candleInterval  // Treat gap as series of empty candles
-                : diff / range;          // Interpolate standard gap
-                
-             return ts.logicalToCoordinate(leftIdx + ratio);
+             // 2. Try direct coordinate from Library using snapped time
+             const c = ts.timeToCoordinate(snappedTime as any);
+             if (c !== null && c !== undefined) return c;
+
+             return null;
           }
 
           const safePriceCoord = (price: number) => { 
               if (price === null || isNaN(price)) return -10000;
               try { 
                   const coord = series.priceToCoordinate(price); 
-                  return coord === null ? -10000 : coord; 
+                  if (coord !== null) return coord;
+                  
+                  // Fallback: Estimate coordinate if off-screen
+                  const firstCandle = dataRef.current[0];
+                  if (!firstCandle) return -10000;
+                  const c0 = series.priceToCoordinate(firstCandle.close);
+                  if (c0 === null) return -10000;
+                  
+                  // Simple linear estimation based on a small price difference
+                  const c1 = series.priceToCoordinate(firstCandle.close * 1.001);
+                  if (c1 === null) return price > firstCandle.close ? -50000 : height + 50000;
+                  
+                  const pDiff = firstCandle.close * 0.001;
+                  const cDiff = c1 - c0;
+                  return c0 + (price - firstCandle.close) * (cDiff / pDiff);
               } catch(e) { 
                   return -10000; 
               }
@@ -1131,13 +1186,18 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
 
           const x1Val = getCoord(d.p1.time);
           const x2Val = getCoord(d.p2.time);
-          const x1 = x1Val ?? -10000;
-          const x2 = x2Val ?? -10000;
+          
+          // Use a much larger clamping value to avoid "expanding" effect when zooming
+          const x1 = x1Val ?? (d.p1.time < (dataRef.current[0]?.time || 0) ? -50000 : width + 50000);
+          const x2 = x2Val ?? (d.p2.time < (dataRef.current[0]?.time || 0) ? -50000 : width + 50000);
           const y1 = safePriceCoord(d.p1.price);
           const y2 = safePriceCoord(d.p2.price);
           
-          const handleDblClick = (e: React.MouseEvent) => { e.stopPropagation(); if (onDrawingEdit && d.id !== 'ghost-preview') onDrawingEdit(d); };
-          const pointerEventsStyle = d.id === 'ghost-preview' ? 'none' : 'auto';
+          const handleDblClick = (e: React.MouseEvent) => { e.stopPropagation(); if (onDrawingEdit && !d.id.startsWith('ghost-preview')) onDrawingEdit(d); };
+          // Disable pointer events on existing drawings if a tool is active (except CURSOR)
+          // to prevent them from blocking the click for placing new points.
+          const isGhost = d.id.startsWith('ghost-preview');
+          const pointerEventsStyle = (isGhost || activeToolRef.current !== 'CURSOR') ? 'none' : 'auto';
           const isSelected = d.id === selectedDrawingId;
 
           if (d.type === 'TEXT') {
@@ -1220,7 +1280,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                           paths.push(
                               <g key={`${d.id}-${dateStr}-${sess.key}`} onDoubleClick={handleDblClick}>
                                   <rect x={sx} y={sy} width={boxWidth} height={boxHeight} fill={sess.color} fillOpacity={boxOpacity} stroke="none" style={{pointerEvents: 'none'}} />
-                                  {d.killZoneConfig!.showLabel && <text x={sx} y={sy - 5} fill={sess.color} fontSize={12} fontWeight="bold" style={{pointerEvents: 'auto', cursor: 'pointer'}}>{sess.label}</text>}
+                                  {d.killZoneConfig!.showLabel && <text x={sx} y={sy - 5} fill={sess.color} fontSize={12} fontWeight="bold" style={{pointerEvents: pointerEventsStyle, cursor: 'pointer'}}>{sess.label}</text>}
                                   {d.killZoneConfig!.showHighLowLines && (<><line x1={sx} y1={sy} x2={ex} y2={sy} stroke={sess.color} strokeWidth={1} style={{pointerEvents: 'none'}} /><line x1={sx} y1={ey} x2={ex} y2={ey} stroke={sess.color} strokeWidth={1} style={{pointerEvents: 'none'}} /></>)}
                                   {d.killZoneConfig!.extend && (<><line x1={ex} y1={sy} x2={width} y2={sy} stroke={sess.color} strokeWidth={1} strokeDasharray="4 2" opacity={0.7} style={{pointerEvents: 'none'}} /><line x1={ex} y1={ey} x2={width} y2={ey} stroke={sess.color} strokeWidth={1} strokeDasharray="4 2" opacity={0.7} style={{pointerEvents: 'none'}} /></>)}
                                   {d.killZoneConfig!.showAverage && (<line x1={sx} y1={(sy+ey)/2} x2={d.killZoneConfig!.extend ? width : ex} y2={(sy+ey)/2} stroke={sess.color} strokeWidth={1} strokeDasharray="2 2" opacity={0.7} style={{pointerEvents: 'none'}} />)}
@@ -1241,7 +1301,17 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                       <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="transparent" strokeWidth={20} className="cursor-move" onMouseDown={(e) => startDrag(e, d, 'all')} />
                       <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={d.color} strokeWidth={d.lineWidth} strokeDasharray={d.lineStyle === 'dashed' ? '8 4' : d.lineStyle === 'dotted' ? '2 2' : ''} style={{pointerEvents: 'none'}} />
                       {d.text && (
-                          <text x={midX} y={midY} dy={-6} textAnchor="middle" fill={d.color} fontSize={d.fontSize || 12} fontWeight="bold" transform={`rotate(${rotation}, ${midX}, ${midY})`} style={{textShadow: '0px 1px 2px rgba(0,0,0,0.8)', pointerEvents: 'none'}}>
+                          <text 
+                            x={midX} 
+                            y={midY} 
+                            dy={d.textPosition === 'bottom' ? (d.fontSize || 12) + 4 : -6} 
+                            textAnchor="middle" 
+                            fill={d.color} 
+                            fontSize={d.fontSize || 12} 
+                            fontWeight="bold" 
+                            transform={`rotate(${rotation}, ${midX}, ${midY})`} 
+                            style={{textShadow: '0px 1px 2px rgba(0,0,0,0.8)', pointerEvents: 'none'}}
+                          >
                               {d.text}
                           </text>
                       )}
@@ -1249,22 +1319,94 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                   </g>
               );
           } else if (d.type === 'RECTANGLE') {
-              // ... (Rectangle rendering preserved) ...
               const xStart = Math.min(x1, x2);
               const yStart = Math.min(y1, y2);
-              const width = Math.abs(x2 - x1);
-              const height = Math.abs(y2 - y1);
-              if (y1 > -5000 && y2 > -5000) {
-                  paths.push(<g key={d.id} onDoubleClick={handleDblClick} style={{pointerEvents: pointerEventsStyle}}><rect x={xStart} y={yStart} width={width} height={height} fill={d.color} fillOpacity={0.2} stroke={d.color} strokeWidth={d.lineWidth} strokeDasharray={d.lineStyle === 'dashed' ? '4 2' : d.lineStyle === 'dotted' ? '2 2' : ''} className="cursor-move" onMouseDown={(e) => startDrag(e, d, 'all')} />{d.text && (<text x={xStart + 5} y={yStart - 5} fill={d.color} fontSize={11} fontWeight="bold" style={{textShadow: '0px 1px 2px black'}}>{d.text}</text>)}{isSelected && d.id !== 'ghost-preview' && (<><circle cx={x1} cy={y1} r={5} fill="white" stroke={d.color} strokeWidth={1} className="cursor-pointer" onMouseDown={(e) => startDrag(e, d, 'p1')} /><circle cx={x2} cy={y2} r={5} fill="white" stroke={d.color} strokeWidth={1} className="cursor-pointer" onMouseDown={(e) => startDrag(e, d, 'p2')} /></>)}</g>);
+              const widthRect = Math.abs(x2 - x1);
+              const heightRect = Math.abs(y2 - y1);
+              const fillOpacity = d.fillOpacity !== undefined ? d.fillOpacity : 0.05;
+              
+              // Only skip if both points are extremely far off in the same direction
+              const isOffScreen = (y1 < -1000 && y2 < -1000) || (y1 > height + 1000 && y2 > height + 1000);
+
+              if (!isOffScreen) {
+                  paths.push(
+                    <g key={d.id} onDoubleClick={handleDblClick} style={{pointerEvents: pointerEventsStyle}}>
+                        {/* Fill - No pointer events so user can click candles behind */}
+                        <rect 
+                            x={xStart} y={yStart} width={widthRect} height={heightRect} 
+                            fill={d.color} fillOpacity={fillOpacity} 
+                            stroke="none"
+                            style={{pointerEvents: 'none'}}
+                        />
+                        
+                        {/* Border - Hit area and visible line */}
+                        <rect 
+                            x={xStart} y={yStart} width={widthRect} height={heightRect} 
+                            fill="none" 
+                            stroke={d.showBorder !== false ? d.color : 'transparent'} 
+                            strokeWidth={d.showBorder !== false ? d.lineWidth : 12} 
+                            strokeDasharray={d.lineStyle === 'dashed' ? '4 2' : d.lineStyle === 'dotted' ? '2 2' : ''} 
+                            className="cursor-move" 
+                            onMouseDown={(e) => startDrag(e, d, 'all')} 
+                            style={{pointerEvents: pointerEventsStyle === 'none' ? 'none' : 'stroke'}}
+                        />
+
+                        {d.text && (() => {
+                            let textX = xStart + 5;
+                            let textY = yStart + 15;
+                            let textAnchor = "start";
+                            const isOutside = d.rectTextPlacement === 'outside';
+
+                            // Horizontal Alignment
+                            if (d.rectTextHAlign === 'center') {
+                                textX = xStart + widthRect / 2;
+                                textAnchor = "middle";
+                            } else if (d.rectTextHAlign === 'right') {
+                                textX = xStart + widthRect - 5;
+                                textAnchor = "end";
+                            }
+
+                            // Vertical Alignment
+                            if (d.rectTextVAlign === 'middle') {
+                                textY = yStart + heightRect / 2 + 5;
+                            } else if (d.rectTextVAlign === 'bottom') {
+                                textY = yStart + heightRect - 5;
+                                if (isOutside) textY = yStart + heightRect + 15;
+                            } else if (d.rectTextVAlign === 'top') {
+                                textY = yStart + 15;
+                                if (isOutside) textY = yStart - 5;
+                            }
+
+                            return (
+                                <text 
+                                    x={textX} y={textY} 
+                                    fill={d.color} 
+                                    fontSize={11} 
+                                    fontWeight="bold" 
+                                    textAnchor={textAnchor}
+                                    style={{textShadow: '0px 1px 2px black', pointerEvents: 'none'}}
+                                >
+                                    {d.text}
+                                </text>
+                            );
+                        })()}
+                        {isSelected && !d.id.startsWith('ghost-preview') && (
+                            <>
+                                <circle cx={x1} cy={y1} r={5} fill="white" stroke={d.color} strokeWidth={1} className="cursor-pointer" onMouseDown={(e) => startDrag(e, d, 'p1')} />
+                                <circle cx={x2} cy={y2} r={5} fill="white" stroke={d.color} strokeWidth={1} className="cursor-pointer" onMouseDown={(e) => startDrag(e, d, 'p2')} />
+                            </>
+                        )}
+                    </g>
+                  );
               }
           } else if (d.type === 'FIB') {
               // ... (Fib rendering preserved) ...
               if (y1 > -5000 && y2 > -5000) {
-                  paths.push(<line key={`${d.id}-hit`} x1={x1} y1={y1} x2={x2} y2={y2} stroke="transparent" strokeWidth={15} style={{pointerEvents: pointerEventsStyle, cursor: 'move'}} onMouseDown={(e) => d.id !== 'ghost-preview' && startDrag(e, d, 'all')} onDoubleClick={handleDblClick} />);
+                  paths.push(<line key={`${d.id}-hit`} x1={x1} y1={y1} x2={x2} y2={y2} stroke="transparent" strokeWidth={15} style={{pointerEvents: pointerEventsStyle, cursor: 'move'}} onMouseDown={(e) => !d.id.startsWith('ghost-preview') && startDrag(e, d, 'all')} onDoubleClick={handleDblClick} />);
                   paths.push(<line key={`${d.id}-main`} x1={x1} y1={y1} x2={x2} y2={y2} stroke={d.color} strokeWidth={1} strokeDasharray="4 4" opacity={0.5} style={{pointerEvents: 'none'}} />);
-                  if (isSelected && d.id !== 'ghost-preview') {
-                      paths.push(<circle key={`${d.id}-p1`} cx={x1} cy={y1} r={5} fill="white" stroke={d.color} strokeWidth={1} className="cursor-pointer" onMouseDown={(e) => startDrag(e, d, 'p1')} style={{pointerEvents: 'auto'}} />);
-                      paths.push(<circle key={`${d.id}-p2`} cx={x2} cy={y2} r={5} fill="white" stroke={d.color} strokeWidth={1} className="cursor-pointer" onMouseDown={(e) => startDrag(e, d, 'p2')} style={{pointerEvents: 'auto'}} />);
+                  if (isSelected && !d.id.startsWith('ghost-preview')) {
+                      paths.push(<circle key={`${d.id}-p1`} cx={x1} cy={y1} r={5} fill="white" stroke={d.color} strokeWidth={1} className="cursor-pointer" onMouseDown={(e) => startDrag(e, d, 'p1')} style={{pointerEvents: pointerEventsStyle}} />);
+                      paths.push(<circle key={`${d.id}-p2`} cx={x2} cy={y2} r={5} fill="white" stroke={d.color} strokeWidth={1} className="cursor-pointer" onMouseDown={(e) => startDrag(e, d, 'p2')} style={{pointerEvents: pointerEventsStyle}} />);
                   }
                   const range = d.p1.price - d.p2.price;
                   d.fibLevels?.forEach(fib => {
@@ -1292,18 +1434,18 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                           <rect x={boxX} y={isLong ? targetY : y1} width={boxW} height={Math.abs(targetY - y1)} fill={rewardColor} fillOpacity={0.15} stroke="none" />
                           <line x1={boxX} y1={y1} x2={boxX+boxW} y2={y1} stroke="#71717a" strokeWidth={1} />
                       </g>);
-                      if (d.id === 'ghost-preview' && y2 > -5000 && x1 > -5000 && x2 > -5000) {
+                      if (d.id.startsWith('ghost-preview') && y2 > -5000 && x1 > -5000 && x2 > -5000) {
                           paths.push(<line key={`${d.id}-connect`} x1={x1} y1={y1} x2={x2} y2={y2} stroke={d.color} strokeWidth={1} strokeDasharray="4 4" opacity={0.8} style={{pointerEvents: 'none'}} />);
                       }
-                      if (d.id !== 'ghost-preview') {
+                      if (!d.id.startsWith('ghost-preview')) {
                           const totalTop = Math.min(targetY, stopY);
                           const totalH = Math.abs(targetY - stopY);
-                          paths.push(<rect key={`${d.id}-move`} x={boxX} y={totalTop} width={boxW} height={totalH} fill="transparent" cursor="move" onMouseDown={(e) => startDrag(e, d, 'all')} onDoubleClick={handleDblClick} style={{pointerEvents: 'auto'}} />);
-                          paths.push(<line key={`${d.id}-resize-w1`} x1={boxX} y1={totalTop} x2={boxX} y2={totalTop+totalH} stroke="transparent" strokeWidth={10} cursor="ew-resize" onMouseDown={(e) => startDrag(e, d, x1 < x2 ? 'p1' : 'p2')} style={{pointerEvents: 'auto'}} />);
-                          paths.push(<line key={`${d.id}-resize-w2`} x1={boxX+boxW} y1={totalTop} x2={boxX+boxW} y2={totalTop+totalH} stroke="transparent" strokeWidth={10} cursor="ew-resize" onMouseDown={(e) => startDrag(e, d, x1 < x2 ? 'p2' : 'p1')} style={{pointerEvents: 'auto'}} />);
-                          paths.push(<line key={`${d.id}-resize-top`} x1={boxX} y1={totalTop} x2={boxX+boxW} y2={totalTop} stroke="transparent" strokeWidth={10} cursor="ns-resize" onMouseDown={(e) => startDrag(e, d, isLong ? (targetY < stopY ? 'target' : 'stop') : (stopY < targetY ? 'stop' : 'target'))} style={{pointerEvents: 'auto'}} />);
-                          paths.push(<line key={`${d.id}-resize-bot`} x1={boxX} y1={totalTop+totalH} x2={boxX+boxW} y2={totalTop+totalH} stroke="transparent" strokeWidth={10} cursor="ns-resize" onMouseDown={(e) => startDrag(e, d, isLong ? (targetY > stopY ? 'target' : 'stop') : (stopY > targetY ? 'stop' : 'target'))} style={{pointerEvents: 'auto'}} />);
-                          paths.push(<line key={`${d.id}-resize-entry`} x1={boxX} y1={y1} x2={boxX+boxW} y2={y1} stroke="transparent" strokeWidth={10} cursor="ns-resize" onMouseDown={(e) => startDrag(e, d, 'entry')} style={{pointerEvents: 'auto'}} />);
+                          paths.push(<rect key={`${d.id}-move`} x={boxX} y={totalTop} width={boxW} height={totalH} fill="transparent" cursor="move" onMouseDown={(e) => startDrag(e, d, 'all')} onDoubleClick={handleDblClick} style={{pointerEvents: pointerEventsStyle}} />);
+                          paths.push(<line key={`${d.id}-resize-w1`} x1={boxX} y1={totalTop} x2={boxX} y2={totalTop+totalH} stroke="transparent" strokeWidth={10} cursor="ew-resize" onMouseDown={(e) => startDrag(e, d, x1 < x2 ? 'p1' : 'p2')} style={{pointerEvents: pointerEventsStyle}} />);
+                          paths.push(<line key={`${d.id}-resize-w2`} x1={boxX+boxW} y1={totalTop} x2={boxX+boxW} y2={totalTop+totalH} stroke="transparent" strokeWidth={10} cursor="ew-resize" onMouseDown={(e) => startDrag(e, d, x1 < x2 ? 'p2' : 'p1')} style={{pointerEvents: pointerEventsStyle}} />);
+                          paths.push(<line key={`${d.id}-resize-top`} x1={boxX} y1={totalTop} x2={boxX+boxW} y2={totalTop} stroke="transparent" strokeWidth={10} cursor="ns-resize" onMouseDown={(e) => startDrag(e, d, isLong ? (targetY < stopY ? 'target' : 'stop') : (stopY < targetY ? 'stop' : 'target'))} style={{pointerEvents: pointerEventsStyle}} />);
+                          paths.push(<line key={`${d.id}-resize-bot`} x1={boxX} y1={totalTop+totalH} x2={boxX+boxW} y2={totalTop+totalH} stroke="transparent" strokeWidth={10} cursor="ns-resize" onMouseDown={(e) => startDrag(e, d, isLong ? (targetY > stopY ? 'target' : 'stop') : (stopY > targetY ? 'stop' : 'target'))} style={{pointerEvents: pointerEventsStyle}} />);
+                          paths.push(<line key={`${d.id}-resize-entry`} x1={boxX} y1={y1} x2={boxX+boxW} y2={y1} stroke="transparent" strokeWidth={10} cursor="ns-resize" onMouseDown={(e) => startDrag(e, d, 'entry')} style={{pointerEvents: pointerEventsStyle}} />);
                       }
                       const riskAmt = Math.abs(d.p1.price - d.stopPrice);
                       const rewardAmt = Math.abs(d.targetPrice - d.p1.price);
@@ -1337,8 +1479,27 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
   };
 
   useEffect(() => {
+      tempPointRef.current = null;
+      setTempPoint(null);
+  }, [activeTool]);
+
+  useEffect(() => {
       if (!chartRef.current) return;
-      const handleVisibleRangeChange = () => requestAnimationFrame(updateDrawings);
+      const handleVisibleRangeChange = (range: LogicalRange | null) => {
+          if (!range) return;
+          requestAnimationFrame(updateDrawings);
+          
+          // Trigger onLoadMore if scrolling near the beginning of data
+          if (range.from < 50 && onLoadMore && !isLoadingHistoryRef.current) {
+              isLoadingHistoryRef.current = true;
+              onLoadMore();
+              // Reset loading ref after a short delay to allow data to load and range to update
+              setTimeout(() => {
+                  isLoadingHistoryRef.current = false;
+              }, 1000);
+          }
+      };
+
       chartRef.current.timeScale().subscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
       const ro = new ResizeObserver(() => requestAnimationFrame(updateDrawings));
       if (chartContainerRef.current) ro.observe(chartContainerRef.current);
@@ -1374,6 +1535,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                   activeSymbol={activeSymbol} 
                   currentPrice={currentPrice} 
                   onDoubleClick={onLotSizeWidgetDoubleClick} 
+                  autoConversionPrice={autoConversionPrice}
               />
           )}
       </div>

@@ -107,6 +107,12 @@ export interface DrawingSettings {
     lineWidth: number;
     lineStyle: LineStyle;
     fontSize?: number; // For Text Tool
+    textPosition?: 'top' | 'bottom'; // For Trendline
+    fillOpacity?: number; // For Rectangle
+    showBorder?: boolean; // For Rectangle
+    rectTextVAlign?: 'top' | 'middle' | 'bottom'; // For Rectangle
+    rectTextHAlign?: 'left' | 'center' | 'right'; // For Rectangle
+    rectTextPlacement?: 'inside' | 'outside'; // For Rectangle
 }
 
 export interface FibLevel {
@@ -147,6 +153,12 @@ export interface DrawingObject {
     lineStyle: LineStyle;
     text?: string; 
     fontSize?: number; // Added for Text Tool
+    textPosition?: 'top' | 'bottom'; // For Trendline
+    fillOpacity?: number; // For Rectangle
+    showBorder?: boolean; // For Rectangle
+    rectTextVAlign?: 'top' | 'middle' | 'bottom'; // For Rectangle
+    rectTextHAlign?: 'left' | 'center' | 'right'; // For Rectangle
+    rectTextPlacement?: 'inside' | 'outside'; // For Rectangle
     fibLevels?: FibLevel[]; 
     // For Position Tools
     stopPrice?: number;
@@ -156,6 +168,7 @@ export interface DrawingObject {
     killZoneConfig?: KillZoneConfig;
     // For Multi-Pane support
     pane?: string; // 'MAIN' | 'RSI' | 'MACD' etc.
+    timeframe?: TimeframeType; // Added timeframe
 }
 
 // Updated SymbolType to match Supabase folders

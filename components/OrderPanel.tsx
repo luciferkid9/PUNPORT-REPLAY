@@ -176,13 +176,13 @@ export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, accoun
                 <span className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse"></span>
                 Order Entry
              </h2>
-             <div className="text-xs bg-black/40 border border-white/5 px-3 py-1.5 rounded-lg text-zinc-400 font-mono">
+             <div className="text-xs bg-[#09090b] border border-white/5 px-3 py-1.5 rounded-lg text-zinc-400 font-mono">
                  ${Math.floor(account.equity).toLocaleString()}
              </div>
         </div>
         
         {/* Order Type Tabs */}
-        <div className="flex bg-black/40 p-1.5 rounded-xl mb-6 border border-white/5 shadow-inner">
+        <div className="flex bg-[#09090b] p-1.5 rounded-xl mb-6 border border-white/5 shadow-inner">
             {(['MARKET', 'LIMIT', 'STOP'] as const).map(type => (
                 <button 
                     key={type}
@@ -325,7 +325,7 @@ export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, accoun
       </div>
 
       {/* Active Orders List */}
-      <div className="flex-1 overflow-y-auto p-5 space-y-3 bg-black/10">
+      <div className="flex-1 overflow-y-auto p-5 space-y-3 bg-[#09090b]">
         <div className="flex items-center justify-between mb-3">
             <h3 className="text-xs font-black text-zinc-500 uppercase tracking-widest">Positions</h3>
             <span className="text-[10px] font-bold text-zinc-400 bg-white/5 px-2.5 py-0.5 rounded-full border border-white/5">{openTrades.length}</span>

@@ -147,7 +147,7 @@ export const IndicatorSettingsModal: React.FC<Props> = ({ config, onSave, onClos
 
         </div>
 
-        <div className="p-4 border-t border-white/10 flex justify-end space-x-2 bg-black/20">
+        <div className="p-4 border-t border-white/10 flex justify-end space-x-2 bg-[#09090b]">
             <button onClick={onClose} className="px-4 py-2 text-xs font-bold text-zinc-400 hover:text-white transition-colors">Cancel</button>
             <button onClick={handleSave} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-lg transition-colors">Save</button>
         </div>
