@@ -1,0 +1,38 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: authorizedUsers
+    // Document ID: email (string)
+    // Fields:
+    //   - email: string (required) - The email address of the authorized user
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+       return request.auth != null;
+    }
+
+    function isAdmin() {
+       return isAuthenticated() && request.auth.token.email == "godji.agito@gmail.com";
+    }
+
+    match /authorizedUsers/{email} {
+      allow read: if true;
+      allow write: if true; // The app uses a custom email input for auth, not Firebase Auth
+    }
+    match /sharedPortfolios/{portfolioId} {
+      allow read: if true;
+      allow create: if true;
+      allow update, delete: if false;
+    }
+  }
+}

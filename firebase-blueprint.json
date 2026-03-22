@@ -1,0 +1,23 @@
+{
+  "entities": {
+    "AuthorizedUser": {
+      "title": "AuthorizedUser",
+      "description": "User authorized to access the application",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "The email address of the authorized user"
+        }
+      },
+      "required": ["email"]
+    }
+  },
+  "firestore": {
+    "/authorizedUsers/{email}": {
+      "schema": { "$ref": "AuthorizedUser" },
+      "description": "Collection of authorized email addresses"
+    }
+  }
+}
