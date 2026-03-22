@@ -1250,7 +1250,7 @@ const AdminModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void 
     const unsubscribe = onSnapshot(collection(db, "authorizedUsers"), (snapshot) => {
       const emailList = snapshot.docs.map(doc => ({
         id: doc.id,
-        email: doc.data().email || '',
+        email: doc.data().email || doc.id,
         isActive: doc.data().isActive,
         lastLogin: doc.data().lastLogin
       }));
