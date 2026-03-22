@@ -22,6 +22,21 @@ export const AuthScreen: React.FC<Props> = ({ onSuccess }) => {
   const [showSuccess, setShowSuccess] = useState(false);
 
   useEffect(() => {
+    let timeoutId: NodeJS.Timeout;
+    if (showSuccess) {
+      timeoutId = setTimeout(() => {
+        setShowSuccess(false);
+        setMode('LOGIN');
+        setEmail('');
+        setPassword('');
+      }, 5000);
+    }
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId);
+    };
+  }, [showSuccess]);
+
+  useEffect(() => {
     const init = async () => {
       // 1. Get Device ID
       const fp = await FingerprintJS.load();
@@ -106,14 +121,8 @@ export const AuthScreen: React.FC<Props> = ({ onSuccess }) => {
               console.warn("Profile creation failed:", err);
           }
           
-          // Show success message and wait 5s
+          // Show success message
           setShowSuccess(true);
-          setTimeout(() => {
-            setShowSuccess(false);
-            setMode('LOGIN');
-            setEmail('');
-            setPassword('');
-          }, 5000);
         }
       } else {
         // Add timeout for login as well
@@ -144,8 +153,9 @@ export const AuthScreen: React.FC<Props> = ({ onSuccess }) => {
     setError('');
 
     try {
-      const { data: user } = await supabase.auth.getUser();
-      if (!user.user) throw new Error('User not authenticated');
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) throw new Error('User not authenticated');
+      const user = { user: session.user };
 
       // 1. Check coupon validity
       const { data: coupon, error: couponErr } = await supabase
@@ -155,32 +165,37 @@ export const AuthScreen: React.FC<Props> = ({ onSuccess }) => {
         .eq('is_active', true)
         .single();
 
-      if (insertUsedError) {
-  console.error("Supabase Error แจ้งว่า:", insertUsedError); // บรรทัดนี้จะแฉตัวการที่แท้จริง!
-  throw new Error('ขออภัยค่ะ อุปกรณ์นี้เคยรับสิทธิ์ใช้งานฟรีไปแล้ว ❌');
-}
+      if (couponErr || !coupon) {
+        throw new Error('รหัสคูปองไม่ถูกต้อง หรือหมดอายุ');
+      }
 
       // 2. Check if device already used a coupon
-      const { data: used, error: usedErr } = await supabase
+      const { data: usedRecords, error: usedErr } = await supabase
         .from('device_used_coupons')
         .select('*')
-        .eq('device_id', deviceId)
-        .single();
+        .eq('device_id', deviceId);
 
-      if (used) {
-        if (used.user_id === user.user.id) {
-          // Same user, just sync profile
-          const trialEndsAt = new Date();
-          trialEndsAt.setDate(trialEndsAt.getDate() + 90);
-          await supabase.from('user_profiles').update({ trial_ends_at: trialEndsAt.toISOString() }).eq('id', user.user.id);
-          onSuccess();
-          return;
+      if (usedRecords && usedRecords.length > 0) {
+        const usedByOther = usedRecords.some(r => r.user_id !== user.user.id);
+        if (usedByOther) {
+            throw new Error('อุปกรณ์นี้เคยรับสิทธิ์คูปองไปแล้วโดยบัญชีอื่น (จำกัด 1 เครื่อง / 1 บัญชี)');
         }
-        throw new Error('เครื่องนี้เคยใช้สิทธิ์คูปองไปแล้วโดยบัญชีอื่น');
+
+        const alreadyUsedThisCoupon = usedRecords.some(r => r.coupon_code === couponCode.trim());
+        if (alreadyUsedThisCoupon) {
+            // Same user, re-verifying the same coupon
+            const trialEndsAt = new Date();
+            trialEndsAt.setDate(trialEndsAt.getDate() + (coupon.duration_days || 90));
+            await supabase.from('user_profiles').update({ trial_ends_at: trialEndsAt.toISOString() }).eq('id', user.user.id);
+            onSuccess();
+            return;
+        }
+        
+        // If it's the same user but a DIFFERENT coupon, we proceed to record it below.
       }
 
       // 3. Update user profile trial
-      const trialDays = 90;
+      const trialDays = coupon.duration_days || 90;
       const trialEndsAt = new Date();
       trialEndsAt.setDate(trialEndsAt.getDate() + trialDays);
 
@@ -205,18 +220,18 @@ export const AuthScreen: React.FC<Props> = ({ onSuccess }) => {
   };
 
   if (showSuccess) {
-    let title = "Success!";
-    let message = "Operation completed successfully.";
+    let title = "สำเร็จ!";
+    let message = "ดำเนินการเสร็จสิ้น";
     
     if (mode === 'REGISTER') {
-        title = "Registration Successful!";
-        message = "Your account has been created.";
+        title = "สมัครสมาชิกสำเร็จ!";
+        message = "บัญชีของคุณถูกสร้างเรียบร้อยแล้ว";
     } else if (mode === 'FORGOT_PASSWORD') {
-        title = "Check Your Email";
-        message = "We've sent a password reset link to your email.";
+        title = "ตรวจสอบอีเมลของคุณ";
+        message = "เราได้ส่งลิงก์สำหรับรีเซ็ตรหัสผ่านไปที่อีเมลของคุณแล้ว";
     } else if (mode === 'UPDATE_PASSWORD') {
-        title = "Password Updated";
-        message = "Your password has been changed successfully.";
+        title = "อัปเดตรหัสผ่านสำเร็จ";
+        message = "รหัสผ่านของคุณถูกเปลี่ยนเรียบร้อยแล้ว";
     }
 
     return (
@@ -227,7 +242,7 @@ export const AuthScreen: React.FC<Props> = ({ onSuccess }) => {
             </div>
             <h2 className="text-2xl font-black text-white mb-2 uppercase">{title}</h2>
             <p className="text-zinc-400 text-sm mb-6">{message}</p>
-            <p className="text-blue-400 text-xs font-bold animate-pulse mb-4">Redirecting to login...</p>
+            <p className="text-blue-400 text-sm font-bold animate-pulse mb-6">กำลังพากลับไปหน้าเข้าสู่ระบบใน 5 วินาที...</p>
             <button 
                 onClick={() => {
                     setShowSuccess(false);
@@ -235,9 +250,9 @@ export const AuthScreen: React.FC<Props> = ({ onSuccess }) => {
                     setEmail('');
                     setPassword('');
                 }}
-                className="text-xs text-zinc-500 hover:text-white underline cursor-pointer"
+                className="w-full py-3 px-4 bg-white text-black font-bold rounded-xl hover:bg-zinc-200 transition-colors"
             >
-                Go to Login Now
+                กลับไปหน้าเข้าสู่ระบบทันที
             </button>
          </div>
       </div>

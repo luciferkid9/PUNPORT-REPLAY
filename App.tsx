@@ -212,12 +212,24 @@ const App: React.FC = () => {
   // Load User ID on Auth
   useEffect(() => {
       const checkUser = async () => {
-          const { data: { user } } = await supabase.auth.getUser();
-          if (user) {
-              setUserId(user.id);
-              setIsAuthenticated(true);
-          } else {
-              setIsLoading(false); // Stop loading if no user
+          try {
+              const { data: { session }, error } = await supabase.auth.getSession();
+              if (error) {
+                  console.warn("Auth session error:", error.message);
+                  if (error.message.includes("Refresh Token")) {
+                      await supabase.auth.signOut();
+                  }
+              }
+              
+              if (session?.user) {
+                  setUserId(session.user.id);
+                  setIsAuthenticated(true);
+              } else {
+                  setIsLoading(false); // Stop loading if no user
+              }
+          } catch (e) {
+              console.error("Auth check failed:", e);
+              setIsLoading(false);
           }
       };
       checkUser();

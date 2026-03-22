@@ -44,11 +44,11 @@ export const ChallengeSetupModal: React.FC<Props> = ({ profiles, onStart, onCrea
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-      const getUser = async () => {
-          const { data: { user } } = await supabase.auth.getUser();
-          if (user?.email) setUserEmail(user.email);
+      const fetchSession = async () => {
+          const { data: { session } } = await supabase.auth.getSession();
+          if (session?.user?.email) setUserEmail(session.user.email);
       };
-      getUser();
+      fetchSession();
   }, []);
 
   const handleSignOut = async () => {
@@ -90,7 +90,8 @@ export const ChallengeSetupModal: React.FC<Props> = ({ profiles, onStart, onCrea
         setDeviceId(vid);
 
         // 2. Check User Status (Supabase)
-        const { data: { user } } = await supabase.auth.getUser();
+        const { data: { session } } = await supabase.auth.getSession();
+        const user = session?.user;
         if (user) {
             // Check Profile
             const { data: profile } = await supabase.from('user_profiles').select('trial_ends_at').eq('id', user.id).single();
@@ -104,14 +105,16 @@ export const ChallengeSetupModal: React.FC<Props> = ({ profiles, onStart, onCrea
             }
 
             // Check Device Usage for THIS user
-            const { data: usedRecord } = await supabase
+            const { data: usedRecords } = await supabase
                 .from('device_used_coupons')
                 .select('*')
                 .eq('device_id', vid)
                 .eq('user_id', user.id)
-                .single();
+                .order('used_at', { ascending: false })
+                .limit(1);
             
-            if (usedRecord) {
+            if (usedRecords && usedRecords.length > 0) {
+                 const usedRecord = usedRecords[0];
                  // Assume 90 days from usage if profile missing
                  const usedAt = new Date(usedRecord.used_at || Date.now()).getTime();
                  const expiry = usedAt + (90 * 24 * 60 * 60 * 1000);
@@ -229,7 +232,8 @@ export const ChallengeSetupModal: React.FC<Props> = ({ profiles, onStart, onCrea
       
       // 1. Record usage in Supabase AND Update Profile
       if (couponInfo) {
-          const { data: { user } } = await supabase.auth.getUser();
+          const { data: { session } } = await supabase.auth.getSession();
+          const user = session?.user;
           
           // Attempt to record usage on server
           // We try to record, but if it fails (e.g. RLS issue or existing device record), 
@@ -301,7 +305,8 @@ export const ChallengeSetupModal: React.FC<Props> = ({ profiles, onStart, onCrea
       setIsVerifying(true);
       setCouponError('');
       
-      const { data: { user } } = await supabase.auth.getUser();
+      const { data: { session } } = await supabase.auth.getSession();
+      const user = session?.user;
       const result = await verifyCoupon(couponCode.trim(), deviceId, user?.id);
       
       if (result.success && result.coupon) {
@@ -315,7 +320,6 @@ export const ChallengeSetupModal: React.FC<Props> = ({ profiles, onStart, onCrea
           setExpiryDate(expiryStr);
           
           // Persist to localStorage (User-Specific)
-          const { data: { user } } = await supabase.auth.getUser();
           if (user) {
               localStorage.setItem(`verified_coupon_data_${user.id}`, JSON.stringify({
                   coupon: result.coupon,

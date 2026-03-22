@@ -541,10 +541,9 @@ export interface CouponInfo {
  */
 export const verifyCoupon = async (code: string, deviceId: string, userId?: string): Promise<{ success: boolean, coupon?: CouponInfo, error?: string }> => {
     try {
-        // 1. Check if THIS SPECIFIC coupon code has already been used on THIS device
+        // 1. Check if THIS device has already used ANY coupon
         const checkDeviceUrl = new URL(`${SUPABASE_URL}/rest/v1/device_used_coupons`);
         checkDeviceUrl.searchParams.set('device_id', `eq.${deviceId}`);
-        checkDeviceUrl.searchParams.set('coupon_code', `eq.${code}`);
         
         const deviceResponse = await fetch(checkDeviceUrl.toString(), {
             method: 'GET',
@@ -558,13 +557,13 @@ export const verifyCoupon = async (code: string, deviceId: string, userId?: stri
         if (deviceResponse.ok) {
             const usedData = await deviceResponse.json();
             if (usedData.length > 0) {
-                const record = usedData[0];
-                // If used by the SAME user, it's valid (re-verification)
-                if (userId && record.user_id === userId) {
-                    // Proceed to check if coupon is still active/valid below
-                } else {
-                    return { success: false, error: "คูปองนี้ถูกใช้ไปแล้วในเครื่องนี้ (โดยบัญชีอื่น)" };
+                // Check if any record belongs to a different user
+                const usedByOther = usedData.some((r: any) => r.user_id !== userId);
+                if (usedByOther) {
+                    return { success: false, error: "อุปกรณ์นี้เคยรับสิทธิ์คูปองไปแล้วโดยบัญชีอื่น (จำกัด 1 เครื่อง / 1 บัญชี)" };
                 }
+                
+                // If it's the same user, they are allowed to re-verify the same coupon or use a new one
             }
         }
 
@@ -605,7 +604,6 @@ export const recordCouponUsage = async (code: string, deviceId: string, userId?:
         // 1. Check if already recorded (Idempotency)
         const checkUrl = new URL(`${SUPABASE_URL}/rest/v1/device_used_coupons`);
         checkUrl.searchParams.set('device_id', `eq.${deviceId}`);
-        checkUrl.searchParams.set('coupon_code', `eq.${code}`);
         
         const checkResponse = await fetch(checkUrl.toString(), {
              method: 'GET',
@@ -619,13 +617,15 @@ export const recordCouponUsage = async (code: string, deviceId: string, userId?:
         if (checkResponse.ok) {
             const existing = await checkResponse.json();
             if (existing.length > 0) {
-                const record = existing[0];
-                // If same user, return true (Success)
-                if (userId && record.user_id === userId) {
-                    return true;
+                const usedByOther = existing.some((r: any) => r.user_id !== userId);
+                if (usedByOther) {
+                    return false; // Blocked: Device used by another user
                 }
-                // If different user, return false (Blocked)
-                return false;
+                
+                const alreadyUsedThisCoupon = existing.some((r: any) => r.coupon_code === code);
+                if (alreadyUsedThisCoupon) {
+                    return true; // Success: Already recorded this exact coupon for this user
+                }
             }
         }
 

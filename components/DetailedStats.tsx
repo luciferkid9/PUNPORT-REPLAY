@@ -118,13 +118,12 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
       const days = Math.floor(absSeconds / (3600 * 24));
       const hours = Math.floor((absSeconds % (3600 * 24)) / 3600);
       const minutes = Math.floor((absSeconds % 3600) / 60);
-      const secs = Math.floor(absSeconds % 60);
 
       const parts = [];
       if (days > 0) parts.push(`${days}d`);
       if (hours > 0) parts.push(`${hours}h`);
       if (minutes > 0) parts.push(`${minutes}m`);
-      if (secs > 0 || parts.length === 0) parts.push(`${secs}s`);
+      if (parts.length === 0) return "<1m";
 
       return parts.join(' ');
   };
@@ -134,10 +133,21 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
   const profitFactor = ((wins.reduce((a,b)=>a+(b.pnl||0),0) / Math.abs(losses.reduce((a,b)=>a+(b.pnl||0),0))) || 0);
 
   let runningBalance = initialBalance;
-  const equityData = [{ id: 0, balance: initialBalance, pnl: 0 }];
+  const equityData = [{ 
+      id: 0, 
+      balance: initialBalance, 
+      pnl: 0, 
+      date: closedTrades[0]?.entryTime 
+          ? new Date(closedTrades[0].entryTime * 1000).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', year: 'numeric' }) 
+          : 'Start' 
+  }];
   closedTrades.forEach((t, i) => {
       runningBalance += (t.pnl || 0);
-      equityData.push({ id: i + 1, balance: runningBalance, pnl: t.pnl || 0 });
+      const ts = t.closeTime || t.entryTime;
+      const dateStr = ts 
+          ? new Date(ts * 1000).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', year: 'numeric' }) 
+          : `Trade ${i+1}`;
+      equityData.push({ id: i + 1, balance: runningBalance, pnl: t.pnl || 0, date: dateStr });
   });
 
   const minEquity = Math.min(...equityData.map(d => d.balance));
@@ -269,7 +279,7 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
           }
           return (
                <div key={i} className={`relative p-1.5 flex flex-col justify-between transition-colors rounded-lg m-0.5 ${cellBg} h-full min-h-0 overflow-hidden`}>
-                   <span className={`text-[10px] font-bold ${d.pnl !== undefined ? 'text-zinc-300' : 'text-zinc-600'}`}>{d.day}</span>
+                   <span className={`text-[10px] font-bold text-zinc-400`}>{d.day}</span>
                    {d.pnl !== undefined && (
                        <div className="text-right mt-auto">
                            <div className={`text-[11px] font-black tracking-tight leading-none ${textColor}`}>{pnlText}</div>
@@ -1004,10 +1014,17 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                                     </linearGradient>
                                 </defs>
                                 <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
-                                <YAxis 
-                                    domain={[domainMin, domainMax]} 
+                                <XAxis 
+                                    dataKey="date" 
                                     stroke="#52525b" 
                                     fontSize={10} 
+                                    tickMargin={10}
+                                    minTickGap={20}
+                                />
+                                <YAxis 
+                                    domain={[domainMin, domainMax]} 
+                                    stroke="#a1a1aa" 
+                                    fontSize={12} 
                                     tickFormatter={(val) => `$${(val/1000).toFixed(1)}k`}
                                     width={45}
                                 />
@@ -1042,7 +1059,7 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                      </div>
                      <div className="flex-1 flex flex-col rounded-xl overflow-hidden bg-black/20 border border-white/5 min-h-0">
                          <div className="grid grid-cols-7 border-b border-white/5 bg-white/5 shrink-0">
-                             {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d, i) => <div key={i} className="text-center py-2 text-[11px] text-zinc-500 font-bold uppercase">{d}</div>)}
+                             {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d, i) => <div key={i} className="text-center py-2 text-[11px] text-zinc-400 font-bold uppercase">{d}</div>)}
                          </div>
                          <div className="grid grid-cols-7 grid-rows-6 gap-0.5 p-1 flex-1 min-h-0 overflow-hidden">
                              {getCalendarCells()}
