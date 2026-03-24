@@ -192,6 +192,13 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
       const currentData = dataRef.current;
       if (!currentData.length) return { time, price: rawPrice };
 
+      // Prevent snapping if time is outside the data range (future or past)
+      const firstTime = currentData[0].time;
+      const lastTime = currentData[currentData.length - 1].time;
+      if (time > lastTime || time < firstTime) {
+          return { time, price: rawPrice };
+      }
+
       // ค้นหาแท่งเทียนที่ใกล้ที่สุด (Nearest Candle)
       let low = 0, high = currentData.length - 1;
       let nearestIdx = 0;
@@ -1126,6 +1133,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
           const timeScale = chart.timeScale();
 
           // FIXED: Improved getCoord to handle interpolation for missing timestamps (H2 even hours)
+          // AND handle future/past times for free drawing beyond candlesticks
           const getCoord = (time: number): number | null => {
              const ts = timeScale;
              if (!ts) return null;
@@ -1133,7 +1141,37 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
              const currentData = dataRef.current;
              if (!currentData || currentData.length === 0) return null;
 
-             // 1. Time Alignment: Find the nearest candle time in the current data
+             const firstTime = currentData[0].time;
+             const lastTime = currentData[currentData.length - 1].time;
+             const interval = intervalRef.current || 60;
+
+             // Handle Future Times
+             if (time > lastTime) {
+                 const futureBars = (time - lastTime) / interval;
+                 const lastCoord = ts.timeToCoordinate(lastTime as any);
+                 if (lastCoord !== null && lastCoord !== undefined) {
+                     const lastLogical = ts.coordinateToLogical(lastCoord);
+                     if (lastLogical !== null && lastLogical !== undefined) {
+                         const c = ts.logicalToCoordinate(lastLogical + futureBars);
+                         if (c !== null && c !== undefined) return c;
+                     }
+                 }
+             }
+             
+             // Handle Past Times
+             if (time < firstTime) {
+                 const pastBars = (firstTime - time) / interval;
+                 const firstCoord = ts.timeToCoordinate(firstTime as any);
+                 if (firstCoord !== null && firstCoord !== undefined) {
+                     const firstLogical = ts.coordinateToLogical(firstCoord);
+                     if (firstLogical !== null && firstLogical !== undefined) {
+                         const c = ts.logicalToCoordinate(firstLogical - pastBars);
+                         if (c !== null && c !== undefined) return c;
+                     }
+                 }
+             }
+
+             // Inside data range: Time Alignment
              // This ensures drawings snap to valid time points in the current TF
              let low = 0, high = currentData.length - 1;
              let nearestIdx = 0;
@@ -1153,7 +1191,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
              // Snap to the nearest candle time
              const snappedTime = currentData[nearestIdx].time;
 
-             // 2. Try direct coordinate from Library using snapped time
+             // Try direct coordinate from Library using snapped time
              const c = ts.timeToCoordinate(snappedTime as any);
              if (c !== null && c !== undefined) return c;
 
