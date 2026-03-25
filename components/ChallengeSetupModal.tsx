@@ -6,16 +6,49 @@ import { TraderProfile, SymbolType, TimeframeType } from '../types';
 import { SYMBOL_CONFIG } from '../constants';
 import { fetchFirstCandle, fetchLastCandle, verifyCoupon, recordCouponUsage, CouponInfo } from '../services/api';
 import { saveAllUserSessions } from '../services/profileService';
+import { dbService } from '../services/dbService';
 
 interface Props {
   profiles: TraderProfile[];
   onStart: (profile: TraderProfile) => void;
   onCreate: (name: string, balance: number, symbols: SymbolType[], startDate: number, endDate: number, timeframe: TimeframeType, customDigits?: number) => void;
   onDelete: (id: string) => void;
+  onImport: (profile: TraderProfile) => void;
 }
 
-export const ChallengeSetupModal: React.FC<Props> = ({ profiles, onStart, onCreate, onDelete }) => {
+export const ChallengeSetupModal: React.FC<Props> = ({ profiles, onStart, onCreate, onDelete, onImport }) => {
   const [view, setView] = useState<'LIST' | 'CREATE'>(profiles.length === 0 ? 'CREATE' : 'LIST');
+  
+  const handleBackupProfile = (profile: TraderProfile) => {
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(profile, null, 2));
+      const downloadAnchorNode = document.createElement('a');
+      downloadAnchorNode.setAttribute("href", dataStr);
+      downloadAnchorNode.setAttribute("download", `protrade_backup_${profile.name}.json`);
+      document.body.appendChild(downloadAnchorNode);
+      downloadAnchorNode.click();
+      downloadAnchorNode.remove();
+  };
+
+  const handleImportProfile = (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+          try {
+              const profile = JSON.parse(e.target?.result as string);
+              // Simple validation
+              if (profile.id && profile.name && profile.account) {
+                  onImport(profile);
+              } else {
+                  alert("Invalid profile file format");
+              }
+          } catch (err) {
+              alert("Error parsing file");
+          }
+      };
+      reader.readAsText(file);
+  };
 
   // Form State
   const [name, setName] = useState('New Session');
@@ -411,13 +444,21 @@ export const ChallengeSetupModal: React.FC<Props> = ({ profiles, onStart, onCrea
                 )}
 
                 {view === 'LIST' && (
-                    <button 
-                        onClick={() => setView('CREATE')}
-                        className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-4 py-2 rounded-xl transition-all shadow-lg shadow-blue-900/20 hover:scale-105 active:scale-95 flex items-center space-x-1 uppercase tracking-wider"
-                    >
-                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M12 4v16m8-8H4" /></svg>
-                        <span>NEW</span>
-                    </button>
+                    <div className="flex flex-col items-end space-y-3">
+                        <button 
+                            onClick={() => setView('CREATE')}
+                            className="bg-gradient-to-br from-blue-600 to-blue-700 hover:from-blue-500 hover:to-blue-600 text-white text-xs font-bold px-5 py-2.5 rounded-xl transition-all shadow-lg shadow-blue-900/40 hover:shadow-blue-500/20 hover:scale-105 active:scale-95 flex items-center space-x-2 uppercase tracking-wider border border-blue-400/20"
+                        >
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M12 4v16m8-8H4" /></svg>
+                            <span>+NEW</span>
+                        </button>
+                        
+                        <input type="file" id="import-profile" className="hidden" onChange={handleImportProfile} accept=".json" />
+                        <label htmlFor="import-profile" className="cursor-pointer bg-white/5 hover:bg-white/10 border border-white/10 text-zinc-300 hover:text-white flex items-center space-x-2 px-4 py-2 rounded-xl transition-all backdrop-blur-sm shadow-sm hover:shadow-md">
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                            <span className="text-xs font-bold uppercase tracking-wider">Import</span>
+                        </label>
+                    </div>
                 )}
                 
                 <div className="h-6 w-px bg-white/10 mx-2"></div>
@@ -494,6 +535,19 @@ export const ChallengeSetupModal: React.FC<Props> = ({ profiles, onStart, onCrea
                                          <span className="w-2 h-2 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.6)]"></span>
                                          <span className="text-xs font-bold text-zinc-400">{mainSymbol}</span>
                                      </div>
+                                     <button 
+                                        type="button"
+                                        onMouseDown={(e) => e.stopPropagation()} 
+                                        onClick={(e) => { 
+                                            e.stopPropagation(); 
+                                            e.preventDefault();
+                                            handleBackupProfile(profile); 
+                                        }}
+                                        className="text-zinc-600 hover:text-blue-400 p-2 rounded-lg hover:bg-blue-500/10 transition-all opacity-100 relative z-50 cursor-pointer"
+                                        title="Backup Profile"
+                                     >
+                                         <svg className="w-4 h-4 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                                     </button>
                                      <button 
                                         type="button"
                                         onMouseDown={(e) => e.stopPropagation()} 

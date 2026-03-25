@@ -18,6 +18,7 @@ import { AuthScreen } from './components/AuthScreen';
 import { calculateSMA, calculateEMA, calculateRSI, calculateMACD, calculateRequiredMargin, calculatePnLInUSD, resampleCandles } from './services/logicEngine';
 import { fetchCandles, parseCSV, fetchHistoricalData, fetchContextCandles, fetchFutureCandles, fetchFirstCandle, fetchPriceAtTime } from './services/api';
 import { supabase } from './services/supabase';
+import { syncManager } from './services/syncManager';
 import { fetchUserSessions, saveUserSession, deleteUserSession } from './services/profileService';
 
 const STORAGE_KEY = 'protrade_profiles_v2'; 
@@ -258,6 +259,9 @@ const App: React.FC = () => {
 
     const syncProfiles = async () => {
         setIsLoading(true);
+        // Process any pending syncs first
+        await syncManager.processQueue();
+        
         const userStorageKey = `${STORAGE_KEY}_${userId}`;
         let localProfiles: TraderProfile[] = [];
 
@@ -481,6 +485,13 @@ const App: React.FC = () => {
       }
       
       handleSelectProfile(newProfile);
+  };
+
+  const handleImportProfile = (profile: TraderProfile) => {
+      setProfiles(prev => [...prev, profile]);
+      if (userId) {
+          saveUserSession(userId, profile);
+      }
   };
 
 
@@ -1166,7 +1177,7 @@ const App: React.FC = () => {
 
   if (!activeProfileId || !activeProfile) {
       return (
-        <ChallengeSetupModal profiles={profiles} onStart={handleSelectProfile} onCreate={handleCreateProfile} onDelete={handleDeleteProfile} />
+        <ChallengeSetupModal profiles={profiles} onStart={handleSelectProfile} onCreate={handleCreateProfile} onDelete={handleDeleteProfile} onImport={handleImportProfile} />
       );
   }
 

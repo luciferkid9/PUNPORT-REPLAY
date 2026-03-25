@@ -143,7 +143,7 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
   }];
   closedTrades.forEach((t, i) => {
       runningBalance += (t.pnl || 0);
-      const ts = t.closeTime || t.entryTime;
+      const ts = t.entryTime || t.orderTime;
       const dateStr = ts 
           ? new Date(ts * 1000).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok', day: '2-digit', month: 'short', year: 'numeric' }) 
           : `Trade ${i+1}`;
@@ -236,9 +236,10 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
       const tradeCountMap: Record<string, number> = {};
       
       closedTrades.forEach(t => {
-          if (t.closeTime) {
-              // Convert trade close time to Thai Date String for correct daily bucketing
-              const d = new Date(t.closeTime * 1000);
+          const timeToUse = t.entryTime || t.orderTime;
+          if (timeToUse) {
+              // Convert trade open time to Thai Date String for correct daily bucketing
+              const d = new Date(timeToUse * 1000);
               const dateKey = d.toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' });
               pnlMap[dateKey] = (pnlMap[dateKey] || 0) + (t.pnl || 0);
               tradeCountMap[dateKey] = (tradeCountMap[dateKey] || 0) + 1;
@@ -273,8 +274,9 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
           let textColor = "text-zinc-500";
           let pnlText = "";
           if (d.pnl !== undefined) {
-               if (d.pnl > 0) { cellBg = "bg-green-500/10 hover:bg-green-500/20"; textColor = "text-green-400"; pnlText = `+${d.pnl.toFixed(2)}`; } 
-               else if (d.pnl < 0) { cellBg = "bg-red-500/10 hover:bg-red-500/20"; textColor = "text-red-400"; pnlText = `${d.pnl.toFixed(2)}`; } 
+               const formattedPnl = d.pnl.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+               if (d.pnl > 0) { cellBg = "bg-green-500/10 hover:bg-green-500/20"; textColor = "text-green-400"; pnlText = `+${formattedPnl}`; } 
+               else if (d.pnl < 0) { cellBg = "bg-red-500/10 hover:bg-red-500/20"; textColor = "text-red-400"; pnlText = `${formattedPnl}`; } 
                else { cellBg = "bg-white/10"; textColor = "text-zinc-400"; pnlText = "0.00"; }
           }
           return (
@@ -343,7 +345,7 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                 </div>
                 <div class="p-4 bg-white/5 rounded-xl border border-white/10">
                     <div class="text-[10px] text-zinc-500 font-bold uppercase">Profit Factor</div>
-                    <div class="text-xl font-bold text-white">${profitFactor.toFixed(2)}</div>
+                    <div class="text-xl font-bold text-white">{profitFactor.toFixed(2)}</div>
                 </div>
                 <div class="p-4 bg-white/5 rounded-xl border border-white/10">
                     <div class="text-[10px] text-zinc-500 font-bold uppercase">Net Profit</div>
@@ -582,8 +584,9 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                         const pnlMap = {};
                         const countMap = {};
                         trades.forEach(t => {
-                            if (t.closeTime) {
-                                const d = new Date(t.closeTime * 1000);
+                            const timeToUse = t.entryTime || t.orderTime;
+                            if (timeToUse) {
+                                const d = new Date(timeToUse * 1000);
                                 if (d.getFullYear() === year && d.getMonth() === month) {
                                     const day = d.getDate();
                                     pnlMap[day] = (pnlMap[day] || 0) + (t.pnl || 0);
@@ -604,9 +607,10 @@ export const DetailedStats: React.FC<Props> = ({ account, sessionStart, currentS
                                 let textColor = "text-zinc-500";
                                 let pnlText = "";
                                 if (pnl !== undefined) {
-                                    if (pnl > 0) { cellBg = "bg-green-500/10"; textColor = "text-green-400"; pnlText = "+" + pnl.toFixed(0); }
-                                    else if (pnl < 0) { cellBg = "bg-red-500/10"; textColor = "text-red-400"; pnlText = pnl.toFixed(0); }
-                                    else { cellBg = "bg-white/10"; textColor = "text-zinc-400"; pnlText = "0"; }
+                                    const formattedPnl = pnl.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                                    if (pnl > 0) { cellBg = "bg-green-500/10"; textColor = "text-green-400"; pnlText = "+" + formattedPnl; }
+                                    else if (pnl < 0) { cellBg = "bg-red-500/10"; textColor = "text-red-400"; pnlText = formattedPnl; }
+                                    else { cellBg = "bg-white/10"; textColor = "text-zinc-400"; pnlText = "0.00"; }
                                 }
 
                                 html += \`

@@ -42,7 +42,7 @@ export const AnalyticsPanel: React.FC<Props> = ({ account, initialBalance }) => 
              </div>
              <span className="text-[8px] text-zinc-500 uppercase font-black tracking-widest mb-0.5">Total P/L</span>
              <span className={`text-lg font-mono font-bold tracking-tight drop-shadow-sm ${totalPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                 ${totalPnL.toFixed(2)}
+                 ${totalPnL.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
              </span>
          </div>
 
@@ -74,7 +74,7 @@ export const AnalyticsPanel: React.FC<Props> = ({ account, initialBalance }) => 
          {/* Metric 5: Max Drawdown */}
          <div className="glass-panel p-2 rounded-xl flex flex-col justify-center bg-white/[0.02]">
              <span className="text-[8px] text-zinc-500 uppercase font-black tracking-widest mb-0.5">Max Drawdown</span>
-             <span className="text-lg font-mono font-bold text-red-400 tracking-tight">-${maxDrawdown.toFixed(2)}</span>
+             <span className="text-lg font-mono font-bold text-red-400 tracking-tight">-${maxDrawdown.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
          </div>
 
       </div>
