@@ -7,9 +7,9 @@ const truncateProfileForCloud = (profile: TraderProfile) => ({
     ...profile,
     account: {
         ...profile.account,
-        history: profile.account.history.slice(-20)
+        history: profile.account.history // เก็บครบทุกออเดอร์ 100% ไม่มีลิมิต
     },
-    drawings: profile.drawings.slice(-5)
+    drawings: profile.drawings // เก็บครบทุกการวาด 100% ไม่มีลิมิต
 });
 
 export const syncManager = {
