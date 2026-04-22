@@ -1,5 +1,28 @@
 
-import { Candle, SymbolType, TimeframeType } from './types';
+import { Candle, SymbolType, TimeframeType, DrawingObject, DragTradeUpdate } from './types';
+
+// Global Event Bus for bypassing React App renders on high-frequency drag events
+export const globalEventBus = new EventTarget();
+
+export const emitActiveDragChange = (detail: DrawingObject | null) => {
+    globalEventBus.dispatchEvent(new CustomEvent('activeDragObjectChange', { detail }));
+};
+
+export const subscribeActiveDragChange = (callback: (d: DrawingObject | null) => void) => {
+    const handler = (e: Event) => callback((e as CustomEvent).detail);
+    globalEventBus.addEventListener('activeDragObjectChange', handler);
+    return () => globalEventBus.removeEventListener('activeDragObjectChange', handler);
+};
+
+export const emitActiveDragTradeChange = (detail: DragTradeUpdate | null) => {
+    globalEventBus.dispatchEvent(new CustomEvent('activeDragTradeChange', { detail }));
+};
+
+export const subscribeActiveDragTradeChange = (callback: (d: DragTradeUpdate | null) => void) => {
+    const handler = (e: Event) => callback((e as CustomEvent).detail);
+    globalEventBus.addEventListener('activeDragTradeChange', handler);
+    return () => globalEventBus.removeEventListener('activeDragTradeChange', handler);
+};
 
 export const INITIAL_BALANCE = 10000;
 export const DEFAULT_LEVERAGE = 100; // Leverage 1:100

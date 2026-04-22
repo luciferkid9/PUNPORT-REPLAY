@@ -3,7 +3,9 @@ import { Candle } from '../types';
 
 const DB_NAME = 'ProTradeReplayDB';
 const STORE_NAME = 'candles';
-const DB_VERSION = 1;
+const STORE_POSITIONS = 'positions';
+const STORE_DRAWINGS = 'drawings';
+const DB_VERSION = 2;
 
 export interface CachedCandle extends Candle {
     symbol: string;
@@ -21,6 +23,12 @@ function getDB() {
                 if (!db.objectStoreNames.contains(STORE_NAME)) {
                     const store = db.createObjectStore(STORE_NAME, { keyPath: 'id' });
                     store.createIndex('symbol_tf_time', ['symbol', 'timeframe', 'time']);
+                }
+                if (!db.objectStoreNames.contains(STORE_POSITIONS)) {
+                    db.createObjectStore(STORE_POSITIONS, { keyPath: 'id' });
+                }
+                if (!db.objectStoreNames.contains(STORE_DRAWINGS)) {
+                    db.createObjectStore(STORE_DRAWINGS, { keyPath: 'id' });
                 }
             },
         });
@@ -126,5 +134,31 @@ export const localDB = {
         const range = IDBKeyRange.bound([symbol, timeframe, 0], [symbol, timeframe, Infinity]);
         const cursor = await index.openCursor(range, 'next');
         return cursor ? cursor.value.time : null;
+    },
+
+    // Persistence Methods
+    async savePosition(position: any) {
+        const db = await getDB();
+        await db.put(STORE_POSITIONS, position);
+    },
+    async deletePosition(id: string) {
+        const db = await getDB();
+        await db.delete(STORE_POSITIONS, id);
+    },
+    async getAllPositions(): Promise<any[]> {
+        const db = await getDB();
+        return await db.getAll(STORE_POSITIONS);
+    },
+    async saveDrawing(drawing: any) {
+        const db = await getDB();
+        await db.put(STORE_DRAWINGS, drawing);
+    },
+    async deleteDrawing(id: string) {
+        const db = await getDB();
+        await db.delete(STORE_DRAWINGS, id);
+    },
+    async getAllDrawings(): Promise<any[]> {
+        const db = await getDB();
+        return await db.getAll(STORE_DRAWINGS);
     }
 };

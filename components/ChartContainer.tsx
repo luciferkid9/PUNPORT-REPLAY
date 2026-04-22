@@ -24,7 +24,6 @@ interface Props {
   onDrawingDelete?: (id: string) => void;
   onModifyTrade?: (id: string, sl: number, tp: number) => void;
   onModifyOrderEntry?: (id: string, newEntry: number) => void;
-  onTradeDrag?: (update: DragTradeUpdate | null) => void; 
   onLoadMore?: () => void;
   onIndicatorDblClick: (config: IndicatorConfig) => void; 
   onRemoveIndicator: (id: string) => void;
@@ -70,11 +69,19 @@ const getSessionTimestamp = (dateStr: string, timeStr: string): number => {
     return (date.getTime() / 1000) - BANGKOK_OFFSET;
 };
 
+const SvgOverlay = forwardRef((props: { pane: string }, ref) => {
+    const [paths, setPaths] = useState<React.ReactNode[]>([]);
+    useImperativeHandle(ref, () => ({
+        setPaths
+    }));
+    return <svg className="absolute top-0 left-0 w-full h-full z-10 overflow-hidden" style={{pointerEvents: 'none'}}>{paths}</svg>;
+});
+
 export const ChartContainer = forwardRef<ChartRef, Props>(({ 
     data, trades, activeTool, magnetMode, drawingSettings, indicatorConfigs, 
     activeSymbol, interval,
     emaDataMap, rsiData, macdData, 
-    onDrawingCreate, onDrawingUpdate, onDrawingEdit, onDrawingSelect, onDrawingDelete, onModifyTrade, onModifyOrderEntry, onTradeDrag, onLoadMore, onIndicatorDblClick, onRemoveIndicator, drawings, selectedDrawingId,
+    onDrawingCreate, onDrawingUpdate, onDrawingEdit, onDrawingSelect, onDrawingDelete, onModifyTrade, onModifyOrderEntry, onLoadMore, onIndicatorDblClick, onRemoveIndicator, drawings, selectedDrawingId,
     pricePrecision = 5,
     lotSizeConfig, onLotSizeWidgetDoubleClick, currentPrice, autoConversionPrice
 }, ref) => {
@@ -108,18 +115,19 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
   const macdHistogramSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   
   // Track active drawing point (per pane or global if careful)
-  const [tempPoint, setTempPoint] = useState<{ point: Point, pane: string } | null>(null);
-  const [hoverPoint, setHoverPoint] = useState<{ point: Point, pane: string } | null>(null); 
+  const tempPointRef = useRef<{ point: Point, pane: string } | null>(null);
+  const hoverPointRef = useRef<{ point: Point, pane: string } | null>(null); 
   
   // SVG Paths split by Pane ID
-  const [svgPaths, setSvgPaths] = useState<Record<string, React.ReactNode[]>>({ MAIN: [] });
+  const svgOverlayRefs = useRef<Record<string, { setPaths: React.Dispatch<React.SetStateAction<React.ReactNode[]>> } | null>>({});
   
-  const [activeDragObject, setActiveDragObject] = useState<DrawingObject | null>(null);
-  const [dragTarget, setDragTarget] = useState<DragState | null>(null);
+  const activeDragObjectRef = useRef<DrawingObject | null>(null);
   
-  const [dragTrade, setDragTrade] = useState<DragTradeState | null>(null);
+  const dragTargetRef = useRef<DragState | null>(null);
+  
+  const dragTradeRef = useRef<DragTradeState | null>(null);
 
-  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+  const mousePosRef = useRef({ x: 0, y: 0 });
 
   const activeToolRef = useRef(activeTool);
   const magnetModeRef = useRef(magnetMode);
@@ -128,8 +136,8 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
   const onDrawingCreateRef = useRef(onDrawingCreate);
   const onDrawingSelectRef = useRef(onDrawingSelect);
   const intervalRef = useRef(interval);
-  const tempPointRef = useRef(tempPoint);
   const isShiftPressed = useRef(false);
+  const dragRafRef = useRef<number | null>(null);
 
   const dataRef = useRef(data);
   useEffect(() => { dataRef.current = data; }, [data]);
@@ -141,7 +149,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
   useEffect(() => { onDrawingCreateRef.current = onDrawingCreate; }, [onDrawingCreate]);
   useEffect(() => { onDrawingSelectRef.current = onDrawingSelect; }, [onDrawingSelect]);
   useEffect(() => { intervalRef.current = interval; }, [interval]);
-  useEffect(() => { tempPointRef.current = tempPoint; }, [tempPoint]);
+
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -311,7 +319,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
     const { chart, series } = getPaneContext(pane);
     
     if (chart && series) {
-      setMousePos({ x, y });
+      mousePosRef.current = { x, y };
 
       const logical = chart.timeScale().coordinateToLogical(x);
       const rawPrice = series.coordinateToPrice(y);
@@ -325,9 +333,9 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
               let finalPrice = snapped.price;
 
               // --- SHIFT KEY SNAP LOGIC (Trendline Creation) ---
-              if (e.shiftKey && tempPoint && tempPoint.pane === pane && activeToolRef.current === 'TRENDLINE') {
-                  const p1Time = tempPoint.point.time;
-                  const p1Price = tempPoint.point.price;
+              if (e.shiftKey && tempPointRef.current && tempPointRef.current.pane === pane && activeToolRef.current === 'TRENDLINE') {
+                  const p1Time = tempPointRef.current.point.time;
+                  const p1Price = tempPointRef.current.point.price;
                   
                   // Use projected coordinate for P1 to handle off-screen snapping
                   const p1Logical = getLogicalFromTime(p1Time);
@@ -343,20 +351,32 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
               }
               // -----------------------------
 
-              setHoverPoint({ point: { time: finalTime, price: finalPrice }, pane });
+              if (tempPointRef.current || activeToolRef.current === 'CROSSHAIR' || activeToolRef.current !== 'CURSOR') {
+                  hoverPointRef.current = { point: { time: finalTime, price: finalPrice }, pane };
+                  
+                  // Only update drawings if we are actively drawing a tool (tempPoint exists) or if we need crosshair info.
+                  // Usually crosshair is handled by typical chart APIs, but for drawn components like dynamic text or handles,
+                  // we need to re-render.
+                  if (tempPointRef.current) {
+                      if (dragRafRef.current) cancelAnimationFrame(dragRafRef.current);
+                      dragRafRef.current = requestAnimationFrame(() => {
+                          updateDrawings();
+                          dragRafRef.current = null;
+                      });
+                  }
+              }
           }
       }
 
       // Main pane trade dragging logic
-      if (pane === 'MAIN' && dragTrade) {
+      if (pane === 'MAIN' && dragTradeRef.current) {
           // ... (Trade drag logic preserved)
           try {
               const price = series.coordinateToPrice(y);
               if (price !== null) {
-                  setDragTrade(prev => prev ? { ...prev, currentPrice: price } : null);
-                  if (onTradeDrag) {
-                      onTradeDrag({ id: dragTrade.id, type: dragTrade.type, price: price });
-                  }
+                  const updatePayload = { id: dragTradeRef.current.id, type: dragTradeRef.current.type, price: price };
+                  dragTradeRef.current = { ...dragTradeRef.current, currentPrice: price };
+                  import('../constants').then(m => m.emitActiveDragTradeChange(updatePayload));
               }
           } catch(e) {
               // Ignore coordinateToPrice errors
@@ -364,11 +384,11 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
       }
 
       // Drawing Dragging Logic
-      if (dragTarget && activeDragObject && dragTarget.pane === pane) {
+      if (dragTargetRef.current && activeDragObjectRef.current && dragTargetRef.current.pane === pane) {
           if (logical !== null && rawPrice !== null) {
               const time = getTimeFromLogical(logical, chart);
               if (time) {
-                  const useMagnet = magnetModeRef.current && !isShiftPressed.current && dragTarget.point !== 'all' && dragTarget.point !== 'target' && dragTarget.point !== 'stop' && dragTarget.point !== 'entry';
+                  const useMagnet = magnetModeRef.current && !isShiftPressed.current && dragTargetRef.current.point !== 'all' && dragTargetRef.current.point !== 'target' && dragTargetRef.current.point !== 'stop' && dragTargetRef.current.point !== 'entry';
                   const snapped = useMagnet ? getMagnetPoint(time, rawPrice, pane) : { time, price: rawPrice };
                   const finalTime = snapped.time;
                   const finalPrice = snapped.price;
@@ -380,17 +400,17 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                   const digits = isJpy ? 3 : ((isXau || isXag) ? 2 : 5);
                   const roundPrice = (p: number) => Math.round(p * Math.pow(10, digits)) / Math.pow(10, digits);
 
-                  const newObj = { ...activeDragObject };
+                  const newObj = { ...activeDragObjectRef.current };
                   
                   // --- FIX 2: Use Logical Difference for Moving "All" to prevent stretching ---
                   let timeDiff = 0;
-                  if (dragTarget.point === 'all') {
+                  if (dragTargetRef.current.point === 'all') {
                       const currentLogical = logical;
-                      const startLogical = getLogicalFromTime(dragTarget.initialMouse.time);
+                      const startLogical = getLogicalFromTime(dragTargetRef.current.initialMouse.time);
                       const logicalDiff = currentLogical - startLogical;
                       
-                      const p1StartLogical = getLogicalFromTime(dragTarget.initialP1.time);
-                      const p2StartLogical = getLogicalFromTime(dragTarget.initialP2.time);
+                      const p1StartLogical = getLogicalFromTime(dragTargetRef.current.initialP1.time);
+                      const p2StartLogical = getLogicalFromTime(dragTargetRef.current.initialP2.time);
                       
                       const newP1Time = getTimeFromLogical(p1StartLogical + logicalDiff, chart);
                       const newP2Time = getTimeFromLogical(p2StartLogical + logicalDiff, chart);
@@ -399,20 +419,20 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                       // But for the "newObj" assignment below, we need to handle it carefully.
                       // Actually, we can just set the new times directly in the 'all' block.
                   } else {
-                      timeDiff = time - dragTarget.initialMouse.time;
+                      timeDiff = time - dragTargetRef.current.initialMouse.time;
                   }
                   
-                  const priceDiff = finalPrice - dragTarget.initialMouse.price;
+                  const priceDiff = finalPrice - dragTargetRef.current.initialMouse.price;
 
                   // --- SHIFT SNAP LOGIC FOR EDITING ---
                   let snapTime = time;
                   let snapPrice = finalPrice;
                   let effectivePriceDiff = priceDiff;
 
-                  if (e.shiftKey && activeDragObject.type === 'TRENDLINE') {
+                  if (e.shiftKey && activeDragObjectRef.current.type === 'TRENDLINE') {
                       // 1. Snapping when dragging endpoints (P1 or P2)
-                      if (dragTarget.point === 'p1' || dragTarget.point === 'p2') {
-                          const otherPoint = dragTarget.point === 'p1' ? activeDragObject.p2 : activeDragObject.p1;
+                      if (dragTargetRef.current.point === 'p1' || dragTargetRef.current.point === 'p2') {
+                          const otherPoint = dragTargetRef.current.point === 'p1' ? activeDragObjectRef.current.p2 : activeDragObjectRef.current.p1;
                           
                           // FIX 1: Use projected coordinates to handle off-screen points
                           const otherLogical = getLogicalFromTime(otherPoint.time);
@@ -431,10 +451,10 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                       }
                       
                       // 2. Orthogonal constraint when moving the whole line
-                      if (dragTarget.point === 'all') {
-                          const startLogical = getLogicalFromTime(dragTarget.initialMouse.time);
+                      if (dragTargetRef.current.point === 'all') {
+                          const startLogical = getLogicalFromTime(dragTargetRef.current.initialMouse.time);
                           const initX = chart.timeScale().logicalToCoordinate(startLogical);
-                          const initY = series.priceToCoordinate(dragTarget.initialMouse.price);
+                          const initY = series.priceToCoordinate(dragTargetRef.current.initialMouse.price);
                           
                           if (initX !== null && initY !== null) {
                               const dx = Math.abs(x - initX);
@@ -450,17 +470,17 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                   }
                   // ------------------------------------
 
-                  if (dragTarget.point === 'all') {
+                  if (dragTargetRef.current.point === 'all') {
                       // Apply Logical Move
                       const currentLogical = logical;
-                      const startLogical = getLogicalFromTime(dragTarget.initialMouse.time);
+                      const startLogical = getLogicalFromTime(dragTargetRef.current.initialMouse.time);
                       let logicalDiff = currentLogical - startLogical;
                       
                       // Apply Shift Constraint (Vertical Move Only -> No Time Change)
-                      if (e.shiftKey && activeDragObject.type === 'TRENDLINE') {
-                          const startLogical = getLogicalFromTime(dragTarget.initialMouse.time);
+                      if (e.shiftKey && activeDragObjectRef.current.type === 'TRENDLINE') {
+                          const startLogical = getLogicalFromTime(dragTargetRef.current.initialMouse.time);
                           const initX = chart.timeScale().logicalToCoordinate(startLogical);
-                          const initY = series.priceToCoordinate(dragTarget.initialMouse.price);
+                          const initY = series.priceToCoordinate(dragTargetRef.current.initialMouse.price);
                           if (initX !== null && initY !== null) {
                               const dx = Math.abs(x - initX);
                               const dy = Math.abs(y - initY);
@@ -468,35 +488,43 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                           }
                       }
 
-                      const p1StartLogical = getLogicalFromTime(dragTarget.initialP1.time);
-                      const p2StartLogical = getLogicalFromTime(dragTarget.initialP2.time);
+                      const p1StartLogical = getLogicalFromTime(dragTargetRef.current.initialP1.time);
+                      const p2StartLogical = getLogicalFromTime(dragTargetRef.current.initialP2.time);
                       
                       const newP1Time = getTimeFromLogical(p1StartLogical + logicalDiff, chart);
                       const newP2Time = getTimeFromLogical(p2StartLogical + logicalDiff, chart);
                       
                       if (newP1Time && newP2Time) {
-                          newObj.p1 = { time: newP1Time, price: roundPrice(dragTarget.initialP1.price + effectivePriceDiff) };
-                          newObj.p2 = { time: newP2Time, price: roundPrice(dragTarget.initialP2.price + effectivePriceDiff) };
+                          newObj.p1 = { time: newP1Time, price: roundPrice(dragTargetRef.current.initialP1.price + effectivePriceDiff) };
+                          newObj.p2 = { time: newP2Time, price: roundPrice(dragTargetRef.current.initialP2.price + effectivePriceDiff) };
                       }
                       
-                      if (dragTarget.initialTarget !== undefined && newObj.targetPrice !== undefined) newObj.targetPrice = roundPrice(dragTarget.initialTarget + effectivePriceDiff);
-                      if (dragTarget.initialStop !== undefined && newObj.stopPrice !== undefined) newObj.stopPrice = roundPrice(dragTarget.initialStop + effectivePriceDiff);
+                      if (dragTargetRef.current.initialTarget !== undefined && newObj.targetPrice !== undefined) newObj.targetPrice = roundPrice(dragTargetRef.current.initialTarget + effectivePriceDiff);
+                      if (dragTargetRef.current.initialStop !== undefined && newObj.stopPrice !== undefined) newObj.stopPrice = roundPrice(dragTargetRef.current.initialStop + effectivePriceDiff);
                   
-                  } else if (dragTarget.point === 'p1') {
+                  } else if (dragTargetRef.current.point === 'p1') {
                       newObj.p1 = { time: snapTime, price: roundPrice(snapPrice) };
                       if (useMagnet) newObj.p1.time = finalTime;
-                  } else if (dragTarget.point === 'p2') {
+                  } else if (dragTargetRef.current.point === 'p2') {
                       newObj.p2 = { time: snapTime, price: roundPrice(snapPrice) };
                       if (useMagnet) newObj.p2.time = finalTime;
-                  } else if (dragTarget.point === 'target') {
+                  } else if (dragTargetRef.current.point === 'target') {
                       newObj.targetPrice = roundPrice(rawPrice); 
-                  } else if (dragTarget.point === 'stop') {
+                  } else if (dragTargetRef.current.point === 'stop') {
                       newObj.stopPrice = roundPrice(rawPrice); 
-                  } else if (dragTarget.point === 'entry') {
+                  } else if (dragTargetRef.current.point === 'entry') {
                       newObj.p1 = { ...newObj.p1, price: roundPrice(rawPrice) };
                       newObj.p2 = { ...newObj.p2, price: roundPrice(rawPrice) }; 
                   }
-                  setActiveDragObject(newObj);
+                  
+                  activeDragObjectRef.current = newObj as DrawingObject;
+                  
+                  if (dragRafRef.current) cancelAnimationFrame(dragRafRef.current);
+                  dragRafRef.current = requestAnimationFrame(() => {
+                      updateDrawings();
+                      import('../constants').then(m => m.emitActiveDragChange(newObj as DrawingObject));
+                      dragRafRef.current = null;
+                  });
               }
           }
       }
@@ -504,24 +532,26 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
   };
   
   const handleMouseUp = () => {
-      if (dragTrade) {
-          const trade = trades.find(t => t.id === dragTrade.id);
+      if (dragTradeRef.current) {
+          const trade = trades.find(t => t.id === dragTradeRef.current?.id);
           if (trade) {
-              if (dragTrade.type === 'SL' && onModifyTrade) {
-                  onModifyTrade(dragTrade.id, dragTrade.currentPrice, trade.takeProfit);
-              } else if (dragTrade.type === 'TP' && onModifyTrade) {
-                  onModifyTrade(dragTrade.id, trade.stopLoss, dragTrade.currentPrice);
-              } else if (dragTrade.type === 'ENTRY' && onModifyOrderEntry) {
-                  onModifyOrderEntry(dragTrade.id, dragTrade.currentPrice);
+              if (dragTradeRef.current.type === 'SL' && onModifyTrade) {
+                  onModifyTrade(dragTradeRef.current.id, dragTradeRef.current.currentPrice, trade.takeProfit);
+              } else if (dragTradeRef.current.type === 'TP' && onModifyTrade) {
+                  onModifyTrade(dragTradeRef.current.id, trade.stopLoss, dragTradeRef.current.currentPrice);
+              } else if (dragTradeRef.current.type === 'ENTRY' && onModifyOrderEntry) {
+                  onModifyOrderEntry(dragTradeRef.current.id, dragTradeRef.current.currentPrice);
               }
           }
-          setDragTrade(null);
-          if (onTradeDrag) onTradeDrag(null);
+          dragTradeRef.current = null;
+          import('../constants').then(m => m.emitActiveDragTradeChange(null));
       }
-      if (dragTarget && activeDragObject) {
-         if (onDrawingUpdate) onDrawingUpdate(activeDragObject);
-         setDragTarget(null);
-         setActiveDragObject(null);
+      if (dragTargetRef.current && activeDragObjectRef.current) {
+         if (onDrawingUpdate) onDrawingUpdate(activeDragObjectRef.current);
+         dragTargetRef.current = null;
+         activeDragObjectRef.current = null;
+         updateDrawings();
+         import('../constants').then(m => m.emitActiveDragChange(null));
       }
   };
 
@@ -555,7 +585,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
            onDrawingCreate(objectToDrag);
       }
 
-      setDragTarget({
+      dragTargetRef.current = {
           id: targetId,
           point: pointType,
           initialP1: objectToDrag.p1,
@@ -564,8 +594,8 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
           initialTarget: objectToDrag.targetPrice,
           initialStop: objectToDrag.stopPrice,
           pane: pane 
-      });
-      setActiveDragObject(objectToDrag);
+      };
+      activeDragObjectRef.current = objectToDrag;
       if (onDrawingSelect) onDrawingSelect(targetId);
   };
 
@@ -591,7 +621,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
             if (rawPrice === null) return;
             // Disable magnet snapping when dragging to prevent "flipping" or "jumping" issues
             // Also disable for RECTANGLE tool to allow free placement as requested
-            const snapped = (activeDragObject || activeToolRef.current === 'RECTANGLE') ? { time, price: rawPrice } : getMagnetPoint(time, rawPrice, pane);
+            const snapped = (activeDragObjectRef.current || activeToolRef.current === 'RECTANGLE') ? { time, price: rawPrice } : getMagnetPoint(time, rawPrice, pane);
             const clickedPoint: Point = { time: snapped.time, price: snapped.price };
 
             if (activeToolRef.current === 'TEXT') {
@@ -621,7 +651,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
             if (['TRENDLINE', 'FIB', 'LONG_POSITION', 'SHORT_POSITION', 'RECTANGLE'].includes(activeToolRef.current)) {
                 const prev = tempPointRef.current;
                 if (!prev || prev.pane !== pane) {
-                    setTempPoint({ point: clickedPoint, pane });
+                    tempPointRef.current = { point: clickedPoint, pane };
                     return;
                 }
                 
@@ -684,7 +714,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                         pane: pane 
                     });
                 }
-                setTempPoint(null);
+                tempPointRef.current = null;
             }
         }
   };
@@ -1011,18 +1041,18 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
           const tradePointerEvents = activeToolRef.current === 'CURSOR' ? 'auto' : 'none';
           trades.forEach(t => {
               if (t.status === OrderStatus.CLOSED) return;
-              const isDraggingThis = dragTrade && dragTrade.id === t.id;
+              const isDraggingThis = dragTradeRef.current && dragTradeRef.current.id === t.id;
               const labelWidth = 100;
               const xOffset = width - labelWidth - 5;
               if (t.status === OrderStatus.PENDING) {
-                  const price = (isDraggingThis && dragTrade.type === 'ENTRY') ? dragTrade.currentPrice : t.entryPrice;
+                  const price = (isDraggingThis && dragTradeRef.current.type === 'ENTRY') ? dragTradeRef.current.currentPrice : t.entryPrice;
                   const y = safePriceCoord(price);
                   if (y > 0 && y < chartContainerRef.current!.clientHeight) {
                       const color = '#f59e0b';
                       const label = t.type === 'LIMIT' ? 'LIMIT' : 'STOP';
                       mainPaths.push(
                           <g key={`entry-${t.id}`} className="cursor-ns-resize group" style={{pointerEvents: tradePointerEvents}}>
-                              <line x1={0} y1={y} x2={width} y2={y} stroke="transparent" strokeWidth={20} style={{pointerEvents: 'stroke', cursor: 'ns-resize'}} onMouseDown={(e) => { e.stopPropagation(); setDragTrade({ id: t.id, type: 'ENTRY', startPrice: t.entryPrice, currentPrice: t.entryPrice }); }} onDoubleClick={(e) => { e.stopPropagation(); const newPrice = window.prompt("Enter new price:", t.entryPrice.toString()); if (newPrice && !isNaN(parseFloat(newPrice)) && onModifyOrderEntry) onModifyOrderEntry(t.id, parseFloat(newPrice)); }} />
+                              <line x1={0} y1={y} x2={width} y2={y} stroke="transparent" strokeWidth={20} style={{pointerEvents: 'stroke', cursor: 'ns-resize'}} onMouseDown={(e) => { e.stopPropagation(); dragTradeRef.current = { id: t.id, type: 'ENTRY', startPrice: t.entryPrice, currentPrice: t.entryPrice }; }} onDoubleClick={(e) => { e.stopPropagation(); const newPrice = window.prompt("Enter new price:", t.entryPrice.toString()); if (newPrice && !isNaN(parseFloat(newPrice)) && onModifyOrderEntry) onModifyOrderEntry(t.id, parseFloat(newPrice)); }} />
                               <line x1={0} y1={y} x2={width} y2={y} stroke={color} strokeDasharray="4 2" strokeWidth={1} style={{pointerEvents: 'none'}} />
                               <text x={10} y={y - 4} fill={color} fontSize="12" fontWeight="bold" style={{pointerEvents: 'none'}}>#{t.id.substr(0,4)}</text>
                               <g transform={`translate(${xOffset}, ${y - 10})`} style={{pointerEvents: 'none'}}><rect width={labelWidth} height={20} rx={2} fill={color} /><text x={labelWidth/2} y={14} textAnchor="middle" fill="black" fontSize="12" fontWeight="bold">{label} {price.toFixed(pricePrecision)}</text></g>
@@ -1034,21 +1064,21 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                    const entryY = safePriceCoord(t.entryPrice);
                    if (entryY > 0 && entryY < chartContainerRef.current!.clientHeight) {
                        mainPaths.push(<text key={`entry-lbl-${t.id}`} x={10} y={entryY - 4} fill="#a1a1aa" fontSize="12" fontWeight="bold" style={{pointerEvents: 'none'}}>#{t.id.substr(0,4)}</text>);
-                       if (t.stopLoss === 0 && (!isDraggingThis || dragTrade.type !== 'SL')) {
-                            mainPaths.push(<g key={`sl-add-${t.id}`} className="cursor-pointer select-none" style={{pointerEvents: tradePointerEvents}} transform={`translate(${width - 115}, ${entryY - 10})`} onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); setDragTrade({ id: t.id, type: 'SL', startPrice: t.entryPrice, currentPrice: t.entryPrice }); }}><rect width="28" height="18" rx="4" fill="#18181b" stroke="#F23645" strokeWidth={1} /><text x="14" y="12" textAnchor="middle" fill="#F23645" fontSize="11" fontWeight="bold">SL+</text></g>);
+                       if (t.stopLoss === 0 && (!isDraggingThis || dragTradeRef.current.type !== 'SL')) {
+                            mainPaths.push(<g key={`sl-add-${t.id}`} className="cursor-pointer select-none" style={{pointerEvents: tradePointerEvents}} transform={`translate(${width - 115}, ${entryY - 10})`} onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); dragTradeRef.current = { id: t.id, type: 'SL', startPrice: t.entryPrice, currentPrice: t.entryPrice }; }}><rect width="28" height="18" rx="4" fill="#18181b" stroke="#F23645" strokeWidth={1} /><text x="14" y="12" textAnchor="middle" fill="#F23645" fontSize="11" fontWeight="bold">SL+</text></g>);
                        }
-                       if (t.takeProfit === 0 && (!isDraggingThis || dragTrade.type !== 'TP')) {
-                            mainPaths.push(<g key={`tp-add-${t.id}`} className="cursor-pointer select-none" style={{pointerEvents: tradePointerEvents}} transform={`translate(${width - 83}, ${entryY - 10})`} onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); setDragTrade({ id: t.id, type: 'TP', startPrice: t.entryPrice, currentPrice: t.entryPrice }); }}><rect width="28" height="18" rx="4" fill="#18181b" stroke="#089981" strokeWidth={1} /><text x="14" y="12" textAnchor="middle" fill="#089981" fontSize="11" fontWeight="bold">TP+</text></g>);
+                       if (t.takeProfit === 0 && (!isDraggingThis || dragTradeRef.current.type !== 'TP')) {
+                            mainPaths.push(<g key={`tp-add-${t.id}`} className="cursor-pointer select-none" style={{pointerEvents: tradePointerEvents}} transform={`translate(${width - 83}, ${entryY - 10})`} onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); dragTradeRef.current = { id: t.id, type: 'TP', startPrice: t.entryPrice, currentPrice: t.entryPrice }; }}><rect width="28" height="18" rx="4" fill="#18181b" stroke="#089981" strokeWidth={1} /><text x="14" y="12" textAnchor="middle" fill="#089981" fontSize="11" fontWeight="bold">TP+</text></g>);
                        }
                    }
               }
-              if (t.stopLoss > 0 || (isDraggingThis && dragTrade.type === 'SL')) {
-                  const price = (isDraggingThis && dragTrade.type === 'SL') ? dragTrade.currentPrice : t.stopLoss;
+              if (t.stopLoss > 0 || (isDraggingThis && dragTradeRef.current.type === 'SL')) {
+                  const price = (isDraggingThis && dragTradeRef.current.type === 'SL') ? dragTradeRef.current.currentPrice : t.stopLoss;
                   const y = safePriceCoord(price);
                   if (y > 0 && y < chartContainerRef.current!.clientHeight) {
                       mainPaths.push(
                         <g key={`sl-${t.id}`} className="cursor-ns-resize group" style={{pointerEvents: tradePointerEvents}}>
-                            <line x1={0} y1={y} x2={width} y2={y} stroke="transparent" strokeWidth={20} style={{pointerEvents: 'stroke', cursor: 'ns-resize'}} onMouseDown={(e) => { e.stopPropagation(); setDragTrade({ id: t.id, type: 'SL', startPrice: t.stopLoss, currentPrice: t.stopLoss }); }} />
+                            <line x1={0} y1={y} x2={width} y2={y} stroke="transparent" strokeWidth={20} style={{pointerEvents: 'stroke', cursor: 'ns-resize'}} onMouseDown={(e) => { e.stopPropagation(); dragTradeRef.current = { id: t.id, type: 'SL', startPrice: t.stopLoss, currentPrice: t.stopLoss }; }} />
                             <line x1={0} y1={y} x2={width} y2={y} stroke="#F23645" strokeDasharray="4 4" strokeWidth={1} style={{pointerEvents: 'none'}} />
                             <text x={10} y={y - 4} fill="#F23645" fontSize="12" fontWeight="bold" style={{pointerEvents: 'none'}}>SL #{t.id.substr(0,4)}</text>
                             <g transform={`translate(${xOffset}, ${y - 10})`} style={{pointerEvents: 'none'}}><rect width={labelWidth} height={20} rx={4} fill="#F23645" /><text x={labelWidth/2} y={14} textAnchor="middle" fill="white" fontSize="13" fontWeight="bold">SL {price.toFixed(pricePrecision)}</text></g>
@@ -1056,13 +1086,13 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                       );
                   }
               }
-              if (t.takeProfit > 0 || (isDraggingThis && dragTrade.type === 'TP')) {
-                  const price = (isDraggingThis && dragTrade.type === 'TP') ? dragTrade.currentPrice : t.takeProfit;
+              if (t.takeProfit > 0 || (isDraggingThis && dragTradeRef.current.type === 'TP')) {
+                  const price = (isDraggingThis && dragTradeRef.current.type === 'TP') ? dragTradeRef.current.currentPrice : t.takeProfit;
                   const y = safePriceCoord(price);
                   if (y > 0 && y < chartContainerRef.current!.clientHeight) {
                       mainPaths.push(
                         <g key={`tp-${t.id}`} className="cursor-ns-resize group" style={{pointerEvents: tradePointerEvents}}>
-                            <line x1={0} y1={y} x2={width} y2={y} stroke="transparent" strokeWidth={20} style={{pointerEvents: 'stroke', cursor: 'ns-resize'}} onMouseDown={(e) => { e.stopPropagation(); setDragTrade({ id: t.id, type: 'TP', startPrice: t.takeProfit, currentPrice: t.takeProfit }); }} />
+                            <line x1={0} y1={y} x2={width} y2={y} stroke="transparent" strokeWidth={20} style={{pointerEvents: 'stroke', cursor: 'ns-resize'}} onMouseDown={(e) => { e.stopPropagation(); dragTradeRef.current = { id: t.id, type: 'TP', startPrice: t.takeProfit, currentPrice: t.takeProfit }; }} />
                             <line x1={0} y1={y} x2={width} y2={y} stroke="#089981" strokeDasharray="4 4" strokeWidth={1} style={{pointerEvents: 'none'}} />
                             <text x={10} y={y - 4} fill="#089981" fontSize="12" fontWeight="bold" style={{pointerEvents: 'none'}}>TP #{t.id.substr(0,4)}</text>
                             <g transform={`translate(${xOffset}, ${y - 10})`} style={{pointerEvents: 'none'}}><rect width={labelWidth} height={20} rx={4} fill="#089981" /><text x={labelWidth/2} y={14} textAnchor="middle" fill="white" fontSize="13" fontWeight="bold">TP {price.toFixed(pricePrecision)}</text></g>
@@ -1074,28 +1104,28 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
       }
 
       let renderList = [...drawings];
-      if (activeDragObject) {
-         const idx = renderList.findIndex(d => d.id === activeDragObject.id);
-         if (idx >= 0) renderList[idx] = activeDragObject; 
-         else renderList.push(activeDragObject);
+      if (activeDragObjectRef.current) {
+         const idx = renderList.findIndex(d => d.id === activeDragObjectRef.current!.id);
+         if (idx >= 0) renderList[idx] = activeDragObjectRef.current; 
+         else renderList.push(activeDragObjectRef.current);
       }
       
-      if (tempPoint && hoverPoint && activeToolRef.current !== 'CURSOR' && activeToolRef.current !== 'KILLZONE' && activeToolRef.current !== 'TEXT') {
+      if (tempPointRef.current && hoverPointRef.current && activeToolRef.current !== 'CURSOR' && activeToolRef.current !== 'KILLZONE' && activeToolRef.current !== 'TEXT') {
           // ... (Ghost rendering preserved) ...
-          if (tempPoint.pane === hoverPoint.pane) {
-              const ghostId = `ghost-preview-${tempPoint.pane}`;
+          if (tempPointRef.current.pane === hoverPointRef.current.pane) {
+              const ghostId = `ghost-preview-${tempPointRef.current.pane}`;
               const ghostDrawing: DrawingObject = {
                   id: ghostId, symbol: activeSymbolRef.current, type: activeToolRef.current,
-                  p1: tempPoint.point, p2: hoverPoint.point, visible: true, locked: false,
+                  p1: tempPointRef.current.point, p2: hoverPointRef.current.point, visible: true, locked: false,
                   color: drawingSettingsRef.current.color, lineWidth: drawingSettingsRef.current.lineWidth, lineStyle: drawingSettingsRef.current.lineStyle,
                   fillOpacity: drawingSettingsRef.current.fillOpacity,
                   showBorder: drawingSettingsRef.current.showBorder,
-                  pane: tempPoint.pane
+                  pane: tempPointRef.current.pane
               };
               if (activeToolRef.current === 'LONG_POSITION' || activeToolRef.current === 'SHORT_POSITION') {
                     const isLong = activeToolRef.current === 'LONG_POSITION';
-                    const entryP = tempPoint.point.price;
-                    const currentP = hoverPoint.point.price;
+                    const entryP = tempPointRef.current.point.price;
+                    const currentP = hoverPointRef.current.point.price;
                     const dist = Math.abs(currentP - entryP);
                     const minDiff = entryP * 0.0005;
                     let targetPrice, stopPrice;
@@ -1513,12 +1543,11 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
           }
       });
       
-      setSvgPaths(panePaths);
+      Object.entries(panePaths).forEach(([k, v]) => { svgOverlayRefs.current[k]?.setPaths(v); });
   };
 
   useEffect(() => {
       tempPointRef.current = null;
-      setTempPoint(null);
   }, [activeTool]);
 
   useEffect(() => {
@@ -1550,7 +1579,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
           } 
           ro.disconnect(); 
       };
-  }, [drawings, data, activeTool, selectedDrawingId, dragTarget, tempPoint, mousePos, activeDragObject, pricePrecision, dragTrade, trades, hoverPoint, indicatorValues]);
+  }, [drawings, data, activeTool, selectedDrawingId, pricePrecision, trades, indicatorValues]);
 
   return (
     <div ref={wrapperRef} className="w-full h-full flex flex-col relative" onMouseUp={handleMouseUp}>
@@ -1565,7 +1594,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
                   </div>
               ))}
           </div>
-          <svg className="absolute top-0 left-0 w-full h-full z-10 overflow-hidden" style={{pointerEvents: 'none'}}>{svgPaths.MAIN}</svg>
+          <SvgOverlay pane="MAIN" ref={el => svgOverlayRefs.current["MAIN"] = el} />
           
           {lotSizeConfig && onLotSizeWidgetDoubleClick && currentPrice !== undefined && (
               <LotSizeWidget 
@@ -1585,7 +1614,7 @@ export const ChartContainer = forwardRef<ChartRef, Props>(({
               
               <div ref={(el) => { if (el) indicatorContainerRefs.current.set(config.type, el); }} className="w-full h-full relative" >
                   {/* SVG OVERLAY FOR INDICATOR */}
-                  <svg className="absolute top-0 left-0 w-full h-full z-10 overflow-hidden" style={{pointerEvents: 'none'}}>{svgPaths[config.type]}</svg>
+                  <SvgOverlay pane={config.type} ref={el => svgOverlayRefs.current[config.type] = el} />
               </div>
 
               <div className="absolute top-2 right-2 z-20 opacity-0 group-hover:opacity-100 transition-opacity">

@@ -94,9 +94,6 @@ const App: React.FC = () => {
   }, [currentRealTimePrice]);
   const [dataVersion, setDataVersion] = useState(0);
 
-  // Dragging State for Trade Lines
-  const [activeDragTrade, setActiveDragTrade] = useState<DragTradeUpdate | null>(null);
-
   const chartRef = useRef<ChartRef>(null);
   const [activeTool, setActiveTool] = useState<ToolType>('CURSOR');
   const [magnetMode, setMagnetMode] = useState<boolean>(false);
@@ -1374,7 +1371,6 @@ const App: React.FC = () => {
                     trades={account.history.filter(t => t.symbol === activeSymbol)} 
                     onModifyTrade={handleModifyTrade}
                     onModifyOrderEntry={handleModifyOrderEntry}
-                    onTradeDrag={setActiveDragTrade} // Pass dragging callback
                     activeTool={activeTool} magnetMode={magnetMode} drawingSettings={drawingSettings} indicatorConfigs={indicatorConfigs} 
                     onDrawingCreate={handleDrawingCreate} onDrawingUpdate={handleDrawingUpdate} onDrawingEdit={(d) => setEditingDrawingId(d.id)} onDrawingSelect={setSelectedDrawingId} onDrawingDelete={handleDrawingDelete} 
                     onLoadMore={handleLoadMoreHistory} onIndicatorDblClick={setEditingIndicator}
@@ -1404,7 +1400,14 @@ const App: React.FC = () => {
         
         {/* RIGHT PANEL - Floating Bubble Style */}
         <div className="glass-bubble w-80 rounded-2xl flex flex-col shadow-2xl overflow-hidden ring-1 ring-white/5">
-            <OrderPanel activeSymbol={activeSymbol} currentPrice={tradingPrice} account={account} onPlaceOrder={handlePlaceOrder} onCloseOrder={handleCloseOrder} activeDragTrade={activeDragTrade} />
+            <OrderPanel 
+                activeSymbol={activeSymbol} 
+                currentPrice={tradingPrice} 
+                account={account} 
+                onPlaceOrder={handlePlaceOrder} 
+                onCloseOrder={handleCloseOrder} 
+                selectedDrawing={selectedDrawingId ? allDrawings.find(d => d.id === selectedDrawingId) : null}
+            />
         </div>
         
         {editingDrawingId && allDrawings.find(d => d.id === editingDrawingId) && <DrawingSettingsModal drawing={allDrawings.find(d => d.id === editingDrawingId)!} onClose={() => setEditingDrawingId(null)} onSave={(u) => { handleDrawingUpdate(u); setEditingDrawingId(null); }} />}

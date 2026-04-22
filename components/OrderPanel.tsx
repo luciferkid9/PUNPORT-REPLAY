@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
-import { AccountState, OrderSide, Trade, OrderStatus, OrderType, SymbolType, DragTradeUpdate } from '../types';
-import { getContractSize, DEFAULT_LEVERAGE } from '../constants';
+import { AccountState, OrderSide, Trade, OrderStatus, OrderType, SymbolType, DragTradeUpdate, DrawingObject } from '../types';
+import { getContractSize, DEFAULT_LEVERAGE, subscribeActiveDragChange, subscribeActiveDragTradeChange } from '../constants';
 import { calculateRequiredMargin, calculatePnLInUSD } from '../services/logicEngine';
 
 interface Props {
@@ -10,12 +10,28 @@ interface Props {
   account: AccountState;
   onPlaceOrder: (side: OrderSide, type: OrderType, entry: number, sl: number, tp: number, quantity: number) => void;
   onCloseOrder: (tradeId: string) => void;
-  activeDragTrade: DragTradeUpdate | null;
+  selectedDrawing?: DrawingObject | null;
 }
 
-export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, account, onPlaceOrder, onCloseOrder, activeDragTrade }) => {
+export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, account, onPlaceOrder, onCloseOrder, selectedDrawing }) => {
   const [activeTab, setActiveTab] = useState<'MARKET' | 'LIMIT' | 'STOP'>('MARKET');
   const [lotSizeStr, setLotSizeStr] = useState<string>("1.00");
+  const [riskPercentStr, setRiskPercentStr] = useState<string>("");
+  const [activeInputMode, setActiveInputMode] = useState<'LOT' | 'RISK'>('LOT');
+  
+  const [draggedDrawing, setDraggedDrawing] = useState<DrawingObject | null>(null);
+  const [draggedTrade, setDraggedTrade] = useState<DragTradeUpdate | null>(null);
+
+  useEffect(() => {
+      const unsub1 = subscribeActiveDragChange((d) => setDraggedDrawing(d));
+      const unsub2 = subscribeActiveDragTradeChange((d) => setDraggedTrade(d));
+      return () => {
+          unsub1();
+          unsub2();
+      };
+  }, []);
+
+  const effectiveSelectedDrawing = draggedDrawing || selectedDrawing;
   
   // Changed to String state to handle decimal typing correctly (e.g. "0.")
   const [limitPriceStr, setLimitPriceStr] = useState<string>("");
@@ -98,8 +114,89 @@ export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, accoun
   };
 
   const handleLotChange = (val: string) => {
-      if (val === '' || /^\d*\.?\d*$/.test(val)) setLotSizeStr(val);
+      if (val === '' || /^\d*\.?\d*$/.test(val)) {
+          setLotSizeStr(val);
+          setActiveInputMode('LOT');
+      }
   };
+
+  const handleRiskChange = (val: string) => {
+      if (val === '' || /^\d*\.?\d*$/.test(val)) {
+          setRiskPercentStr(val);
+          setActiveInputMode('RISK');
+      }
+  };
+
+  // Auto-fill from selected drawing
+  useEffect(() => {
+     if (effectiveSelectedDrawing && (effectiveSelectedDrawing.type === 'LONG_POSITION' || effectiveSelectedDrawing.type === 'SHORT_POSITION')) {
+         const entry = effectiveSelectedDrawing.p1.price;
+         const sl = effectiveSelectedDrawing.stopPrice || 0;
+         const tp = effectiveSelectedDrawing.targetPrice || 0;
+         
+         const newEntryStr = entry.toFixed(digits);
+         const newSlStr = sl.toFixed(digits);
+         const newTpStr = tp.toFixed(digits);
+         
+         // Only update if changed (use exact string match to avoid floating point loops)
+         if (newEntryStr !== limitPriceStr) setLimitPriceStr(newEntryStr);
+         if (newSlStr !== slPriceStr) setSlPriceStr(newSlStr);
+         if (newTpStr !== tpPriceStr) setTpPriceStr(newTpStr);
+         
+         const isMarket = Math.abs(entry - currentPrice) < 0.0001 * pipScalar;
+         if (!isMarket) {
+             const side = effectiveSelectedDrawing.type === 'LONG_POSITION' ? 'BUY' : 'SELL';
+             if (side === 'BUY' && entry < currentPrice) setActiveTab('LIMIT');
+             else if (side === 'BUY' && entry > currentPrice) setActiveTab('STOP');
+             else if (side === 'SELL' && entry > currentPrice) setActiveTab('LIMIT');
+             else if (side === 'SELL' && entry < currentPrice) setActiveTab('STOP');
+         } else {
+             setActiveTab('MARKET');
+         }
+     }
+  }, [effectiveSelectedDrawing, currentPrice, pipScalar, digits, limitPriceStr, slPriceStr, tpPriceStr]);
+
+  // Sync Lot and Risk
+  useEffect(() => {
+      const sl = parseFloat(slPriceStr) || 0;
+      const entry = targetEntry;
+      if (sl <= 0 || entry <= 0 || account.equity <= 0) return;
+
+      const priceDiff = Math.abs(entry - sl);
+      if (priceDiff <= 0) return;
+
+      if (activeInputMode === 'LOT') {
+          const lot = parseFloat(lotSizeStr) || 0;
+          if (lot <= 0) {
+              if (riskPercentStr !== "0.00") setRiskPercentStr("0.00");
+              return;
+          }
+          const contractSize = getContractSize(activeSymbol);
+          const rawProfit = priceDiff * lot * contractSize;
+          const riskUsd = calculatePnLInUSD(activeSymbol, rawProfit, sl);
+          const rPct = (riskUsd / account.equity) * 100;
+          const rPctStr = rPct.toFixed(2);
+          if (rPctStr !== riskPercentStr) {
+              setRiskPercentStr(rPctStr);
+          }
+      } else if (activeInputMode === 'RISK') {
+          const risk = parseFloat(riskPercentStr) || 0;
+          if (risk <= 0) {
+              if (lotSizeStr !== "0.01") setLotSizeStr("0.01");
+              return;
+          }
+          const riskAmountUSD = account.equity * (risk / 100);
+          const contractSize = getContractSize(activeSymbol);
+          const usd1Lot = calculatePnLInUSD(activeSymbol, priceDiff * 1 * contractSize, sl);
+          if (usd1Lot > 0) {
+              const calcLot = Math.max(0.01, riskAmountUSD / usd1Lot);
+              const newLotStr = calcLot.toFixed(2);
+              if (newLotStr !== lotSizeStr) {
+                 setLotSizeStr(newLotStr);
+              }
+          }
+      }
+  }, [lotSizeStr, riskPercentStr, slPriceStr, targetEntry, activeSymbol, activeInputMode, account.equity]);
 
   // --- VALIDATION & PLACEMENT ---
   const validateAndPlaceOrder = (side: OrderSide) => {
@@ -204,16 +301,29 @@ export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, accoun
             <div className="space-y-3">
                 <div className="text-xs font-bold text-zinc-500 uppercase tracking-wider pl-1">Volume & Price</div>
                 
-                {/* Lot Size */}
-                <div className="relative group">
-                    <label className="absolute left-4 top-1/2 -translate-y-1/2 text-xs font-bold text-zinc-500 uppercase">Lot</label>
-                    <input 
-                        type="text" inputMode="decimal"
-                        value={lotSizeStr} 
-                        onChange={(e) => handleLotChange(e.target.value)}
-                        onBlur={() => { if(lotSizeStr === '' || parseFloat(lotSizeStr) === 0) setLotSizeStr("0.01"); else setLotSizeStr(parseFloat(lotSizeStr).toString()); }}
-                        className="input-bubble w-full rounded-xl pl-12 pr-4 py-3 text-right text-base font-mono font-bold text-white outline-none focus:border-blue-500/50 transition-colors"
-                    />
+                {/* Lot Size & Risk Percentage */}
+                <div className="grid grid-cols-2 gap-3">
+                    <div className="relative group">
+                        <label className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-zinc-500 uppercase">Lot</label>
+                        <input 
+                            type="text" inputMode="decimal"
+                            value={lotSizeStr} 
+                            onChange={(e) => handleLotChange(e.target.value)}
+                            onBlur={() => { if(lotSizeStr === '' || parseFloat(lotSizeStr) === 0) setLotSizeStr("0.01"); else setLotSizeStr(parseFloat(lotSizeStr).toString()); }}
+                            className={`input-bubble w-full rounded-xl pl-10 pr-3 py-3 text-right text-base font-mono font-bold outline-none transition-colors ${activeInputMode === 'LOT' ? 'text-white border-blue-500/50' : 'text-zinc-400 border-transparent'}`}
+                        />
+                    </div>
+                    <div className="relative group">
+                        <label className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-zinc-500 uppercase">Risk%</label>
+                        <input 
+                            type="text" inputMode="decimal"
+                            value={riskPercentStr} 
+                            onChange={(e) => handleRiskChange(e.target.value)}
+                            onBlur={() => { if(riskPercentStr === '' || parseFloat(riskPercentStr) === 0) setRiskPercentStr("1.00"); else setRiskPercentStr(parseFloat(riskPercentStr).toString()); }}
+                            className={`input-bubble w-full rounded-xl pl-12 pr-3 py-3 text-right text-base font-mono font-bold outline-none transition-colors ${activeInputMode === 'RISK' ? 'text-white border-blue-500/50' : 'text-zinc-400 border-transparent'}`}
+                            placeholder="0.00"
+                        />
+                    </div>
                 </div>
 
                 {/* Entry Price (Hidden for Market) */}
@@ -298,11 +408,11 @@ export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, accoun
         <div className="grid grid-cols-2 gap-4 mt-8">
             <button 
                 onClick={() => validateAndPlaceOrder(OrderSide.SHORT)} 
-                className="relative overflow-hidden bg-red-600 hover:bg-red-500 text-white rounded-xl p-4 transition-all transform active:scale-[0.98] shadow-lg shadow-red-900/30 group"
+                className={`relative overflow-hidden ${effectiveSelectedDrawing?.type === 'LONG_POSITION' ? 'bg-red-900/30 text-white/50 opacity-50' : 'bg-red-600 hover:bg-red-500 text-white shadow-lg shadow-red-900/30'} rounded-xl p-4 transition-all transform active:scale-[0.98] group`}
             >
                 <div className="flex flex-col items-center relative z-10">
                     <span className="text-sm font-black tracking-widest">
-                        {activeTab === 'MARKET' ? 'SELL' : `SELL ${activeTab}`}
+                        {effectiveSelectedDrawing?.type === 'SHORT_POSITION' ? 'PLACE SETUP' : (activeTab === 'MARKET' ? 'SELL' : `SELL ${activeTab}`)}
                     </span>
                     <span className="text-xs opacity-70 font-mono mt-1">{targetEntry.toFixed(digits)}</span>
                 </div>
@@ -311,11 +421,11 @@ export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, accoun
 
             <button 
                 onClick={() => validateAndPlaceOrder(OrderSide.LONG)} 
-                className="relative overflow-hidden bg-green-600 hover:bg-green-500 text-white rounded-xl p-4 transition-all transform active:scale-[0.98] shadow-lg shadow-green-900/30 group"
+                className={`relative overflow-hidden ${effectiveSelectedDrawing?.type === 'SHORT_POSITION' ? 'bg-green-900/30 text-white/50 opacity-50' : 'bg-green-600 hover:bg-green-500 text-white shadow-lg shadow-green-900/30'} rounded-xl p-4 transition-all transform active:scale-[0.98] group`}
             >
                 <div className="flex flex-col items-center relative z-10">
                     <span className="text-sm font-black tracking-widest">
-                        {activeTab === 'MARKET' ? 'BUY' : `BUY ${activeTab}`}
+                        {effectiveSelectedDrawing?.type === 'LONG_POSITION' ? 'PLACE SETUP' : (activeTab === 'MARKET' ? 'BUY' : `BUY ${activeTab}`)}
                     </span>
                     <span className="text-xs opacity-70 font-mono mt-1">{targetEntry.toFixed(digits)}</span>
                 </div>
@@ -359,10 +469,10 @@ export const OrderPanel: React.FC<Props> = ({ activeSymbol, currentPrice, accoun
             let displaySL = trade.stopLoss;
             let displayTP = trade.takeProfit;
 
-            if (activeDragTrade && activeDragTrade.id === trade.id) {
-                if (activeDragTrade.type === 'ENTRY') displayEntry = activeDragTrade.price;
-                if (activeDragTrade.type === 'SL') displaySL = activeDragTrade.price;
-                if (activeDragTrade.type === 'TP') displayTP = activeDragTrade.price;
+            if (draggedTrade && draggedTrade.id === trade.id) {
+                if (draggedTrade.type === 'ENTRY') displayEntry = draggedTrade.price;
+                if (draggedTrade.type === 'SL') displaySL = draggedTrade.price;
+                if (draggedTrade.type === 'TP') displayTP = draggedTrade.price;
             }
 
             // --- PROJECTED CASH CALCULATION ---
